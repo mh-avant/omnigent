@@ -917,6 +917,28 @@ async def test_list_sessions_pagination(
     assert page2["data"][0]["id"] != page1["data"][0]["id"]
 
 
+async def test_list_sessions_updated_after_filters_by_last_activity(
+    client: httpx.AsyncClient,
+) -> None:
+    """``updated_after`` keeps only sessions active strictly after the cutoff."""
+    agent = await create_test_agent(client)
+    created = await _create_session(client, agent["id"], title="recent")
+
+    listed = (await client.get("/v1/sessions")).json()["data"]
+    updated_at = next(s["updated_at"] for s in listed if s["id"] == created["id"])
+
+    before = await client.get("/v1/sessions", params={"updated_after": updated_at - 1})
+    assert before.status_code == 200
+    assert created["id"] in {s["id"] for s in before.json()["data"]}
+
+    at = await client.get("/v1/sessions", params={"updated_after": updated_at})
+    assert at.status_code == 200
+    assert created["id"] not in {s["id"] for s in at.json()["data"]}
+
+    negative = await client.get("/v1/sessions", params={"updated_after": -1})
+    assert negative.status_code == 422
+
+
 async def test_list_sessions_deleted_cursor_returns_stale_cursor_400(
     client: httpx.AsyncClient,
 ) -> None:

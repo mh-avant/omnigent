@@ -2921,6 +2921,41 @@ def test_list_conversations_sort_by_updated_at(
     )
 
 
+def test_list_conversations_updated_after_is_exclusive(
+    conversation_store: SqlAlchemyConversationStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ``updated_after`` keeps conversations whose ``updated_at`` is strictly
+    later than the cutoff, so an item append brings an old one back in.
+    """
+    import omnigent.stores.conversation_store.sqlalchemy_store as store_mod
+
+    monkeypatch.setattr(store_mod, "now_epoch", lambda: 100)
+    stale = conversation_store.create_conversation()
+    revived = conversation_store.create_conversation()
+    monkeypatch.setattr(store_mod, "now_epoch", lambda: 200)
+    boundary = conversation_store.create_conversation()
+    monkeypatch.setattr(store_mod, "now_epoch", lambda: 300)
+    conversation_store.append(
+        revived.id,
+        [
+            NewConversationItem(
+                type="message",
+                response_id="resp_updated_after",
+                data=MessageData(role="user", content=[{"type": "input_text", "text": "hi"}]),
+            ),
+        ],
+    )
+
+    page = conversation_store.list_conversations(
+        kind=None, sort_by="updated_at", order="desc", updated_after=200
+    )
+    assert [c.id for c in page.data] == [revived.id]
+    unfiltered = conversation_store.list_conversations(kind=None, updated_after=None)
+    assert {stale.id, revived.id, boundary.id} <= {c.id for c in unfiltered.data}
+
+
 def test_list_conversations_sort_by_updated_at_with_pagination(
     conversation_store: SqlAlchemyConversationStore,
     monkeypatch: pytest.MonkeyPatch,

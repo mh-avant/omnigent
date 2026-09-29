@@ -2923,6 +2923,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         pinned: bool = False,
         pinned_owner: str | None = None,
         title: str | None = None,
+        updated_after: int | None = None,
     ) -> PagedList[Conversation]:
         """
         List conversations with cursor-based pagination.
@@ -2990,6 +2991,8 @@ class SqlAlchemyConversationStore(ConversationStore):
             can access but does NOT own — i.e. sessions shared with them
             by another user. Requires ``accessible_by`` to be set.
             ``False`` (default) disables the filter.
+        :param updated_after: When set, only return conversations whose
+            ``updated_at`` is strictly greater than this epoch-seconds value.
         :returns: A :class:`PagedList` of :class:`Conversation`
             objects.
         """
@@ -3181,6 +3184,8 @@ class SqlAlchemyConversationStore(ConversationStore):
                 stmt = stmt.where(SqlConversation.agent_id == agent_id)
             if title is not None:
                 stmt = stmt.where(SqlConversation.title == title)
+            if updated_after is not None:
+                stmt = stmt.where(SqlConversation.updated_at > updated_after)
             if search_query:
                 pattern = f"%{search_query.lower()}%"
                 title_match = func.lower(SqlConversation.title).like(pattern)

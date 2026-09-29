@@ -6970,6 +6970,127 @@ async def test_session_peek_returns_chronological_projected_items() -> None:
     ]
 
 
+def _api_message(item_id: str, text: str) -> dict[str, object]:
+    """Build one API-shaped assistant message item."""
+    return {
+        "id": item_id,
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_history_forward_page_uses_items_cursor() -> None:
+    """
+    A forward read asks ``GET /items`` for ``order=asc`` after the cursor,
+    keeps the server's chronological order, and returns the newest item as
+    ``next_cursor`` with the server's ``has_more``.
+    """
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    items_params: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/sessions/conv_target/items":
+            items_params.update(dict(request.url.params))
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [_api_message("i3", "third"), _api_message("i4", "fourth")],
+                    "has_more": True,
+                },
+            )
+        if request.url.path == "/v1/sessions/conv_target":
+            return httpx.Response(200, json={"id": "conv_target", "title": "researcher:auth"})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    async with _session_query_client(handler) as client:
+        out = json.loads(
+            await _execute_session_query_tool(
+                "sys_session_get_history",
+                json.dumps({"conversation_id": "conv_target", "after": "i2", "tail_items": 2}),
+                conversation_id="conv_caller",
+                server_client=client,
+            )
+        )
+    assert items_params == {"limit": "2", "order": "asc", "after": "i2"}
+    assert [i["text"] for i in out["items"]] == ["third", "fourth"]
+    assert out["next_cursor"] == "i4"
+    assert out["has_more"] is True
+
+
+@pytest.mark.asyncio
+async def test_session_history_tail_read_returns_resume_cursor() -> None:
+    """A default tail read resumes after its newest item and flags earlier history."""
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/sessions/conv_target/items":
+            assert "after" not in request.url.params
+            return httpx.Response(
+                200,
+                json={
+                    "data": [_api_message("i2", "new"), _api_message("i1", "old")],
+                    # Newest-first: more items precede the page.
+                    "has_more": True,
+                },
+            )
+        if request.url.path == "/v1/sessions/conv_target":
+            return httpx.Response(200, json={"id": "conv_target", "title": "researcher:auth"})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    async with _session_query_client(handler) as client:
+        out = json.loads(
+            await _execute_session_query_tool(
+                "sys_session_get_history",
+                json.dumps({"conversation_id": "conv_target"}),
+                conversation_id="conv_caller",
+                server_client=client,
+            )
+        )
+    assert [i["text"] for i in out["items"]] == ["old", "new"]
+    assert out["next_cursor"] == "i2"
+    assert (out["has_more"], out["has_older"]) == (False, True)
+
+
+@pytest.mark.parametrize(
+    ("items_status", "session_status", "error"),
+    [
+        pytest.param(400, 200, "invalid_cursor", id="stale-cursor"),
+        pytest.param(404, 200, "invalid_cursor", id="malformed-cursor"),
+        pytest.param(404, 404, "session_not_found", id="missing-session"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_session_history_distinguishes_bad_cursor_from_missing_session(
+    items_status: int,
+    session_status: int,
+    error: str,
+) -> None:
+    """A rejected ``after`` cursor is reported as such, not as a missing session."""
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/sessions/conv_target/items":
+            return httpx.Response(items_status, json={"error": {"code": "x"}})
+        if request.url.path == "/v1/sessions/conv_target":
+            return httpx.Response(session_status, json={"id": "conv_target"})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    async with _session_query_client(handler) as client:
+        out = json.loads(
+            await _execute_session_query_tool(
+                "sys_session_get_history",
+                json.dumps({"conversation_id": "conv_target", "after": "i_gone"}),
+                conversation_id="conv_caller",
+                server_client=client,
+            )
+        )
+    assert out == {"error": error, "conversation_id": "conv_target"}
+
+
 @pytest.mark.asyncio
 async def test_session_peek_rest_projects_tool_calls_and_unknown_items() -> None:
     """REST history preserves tool-call/result items and unknown item types."""
@@ -7905,6 +8026,9 @@ async def test_session_list_global_sessions_filter_and_connectivity() -> None:
             "runner_id": "r1",
             "runner_online": True,
             "parent_session_id": None,
+            "created_at": None,
+            "updated_at": None,
+            "owner": None,
         },
         {
             "session_id": "s2",
@@ -7914,12 +8038,132 @@ async def test_session_list_global_sessions_filter_and_connectivity() -> None:
             "runner_id": "r1",
             "runner_online": True,
             "parent_session_id": None,
+            "created_at": None,
+            "updated_at": None,
+            "owner": None,
         },
     ]
     # Connectivity resolved once per UNIQUE runner — two sessions share
     # r1, so exactly one status call (not one per session). A count of 2
     # would mean the dedup regressed into a per-session fan-out.
     assert runner_status_calls == ["r1"]
+
+
+def _global_sessions_handler(
+    sessions_params: dict[str, str],
+    rows: list[dict[str, object]],
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Answer the requests ``sys_session_list`` makes, recording list params."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/sessions/conv_x/child_sessions":
+            return httpx.Response(200, json={"object": "list", "data": []})
+        if path == "/v1/sessions/conv_x":
+            return httpx.Response(200, json={"id": "conv_x", "parent_session_id": None})
+        if path == "/v1/sessions":
+            sessions_params.update(dict(request.url.params))
+            return httpx.Response(200, json={"object": "list", "data": rows})
+        raise AssertionError(f"unexpected path {path}")
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_session_list_forwards_activity_filters_and_reports_timestamps() -> None:
+    """
+    ``updated_after`` (ISO-8601) reaches ``GET /v1/sessions`` as epoch
+    seconds alongside ``sort_by`` / ``visibility``, and each global row
+    reports its creation, last-activity time and owner.
+    """
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    sessions_params: dict[str, str] = {}
+    rows: list[dict[str, object]] = [
+        {
+            "id": "s1",
+            "agent_name": "researcher",
+            "title": "auth",
+            "status": "idle",
+            "created_at": 1_788_000_000,
+            "updated_at": 1_788_003_600,
+            "owner": "alice@example.com",
+        }
+    ]
+    async with _session_query_client(_global_sessions_handler(sessions_params, rows)) as client:
+        out = json.loads(
+            await _execute_session_query_tool(
+                "sys_session_list",
+                json.dumps(
+                    {
+                        "updated_after": "2026-09-01T00:00:00+02:00",
+                        "order_by": "updated",
+                        "ownership": "shared",
+                    }
+                ),
+                conversation_id="conv_x",
+                server_client=client,
+            )
+        )
+
+    # 2026-08-31T22:00:00Z: the offset is honored, not dropped.
+    assert sessions_params["updated_after"] == "1788213600"
+    assert sessions_params["sort_by"] == "updated_at"
+    assert sessions_params["visibility"] == "shared"
+    [row] = out["sessions"]
+    assert row["created_at"] == "2026-08-29T10:40:00Z"
+    assert row["updated_at"] == "2026-08-29T11:40:00Z"
+    assert row["owner"] == "alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_session_list_defaults_keep_legacy_query() -> None:
+    """Without the new filters the list query is unchanged (created order, all)."""
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    sessions_params: dict[str, str] = {}
+    async with _session_query_client(_global_sessions_handler(sessions_params, [])) as client:
+        await _execute_session_query_tool(
+            "sys_session_list",
+            "{}",
+            conversation_id="conv_x",
+            server_client=client,
+        )
+    assert sessions_params["sort_by"] == "created_at"
+    assert sessions_params["visibility"] == "all"
+    assert "updated_after" not in sessions_params
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        pytest.param({"updated_after": "yesterday"}, "not a valid ISO-8601", id="bad-iso"),
+        pytest.param({"updated_after": 1788000000}, "must be an ISO-8601", id="number"),
+        pytest.param({"order_by": "title"}, "'order_by' must be", id="bad-order-by"),
+        pytest.param({"ownership": "theirs"}, "'ownership' must be", id="bad-ownership"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_session_list_rejects_invalid_filters(
+    arguments: dict[str, object],
+    error: str,
+) -> None:
+    """Invalid filters fail before any server request."""
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected request {request.url.path}")
+
+    async with _session_query_client(handler) as client:
+        out = json.loads(
+            await _execute_session_query_tool(
+                "sys_session_list",
+                json.dumps(arguments),
+                conversation_id="conv_x",
+                server_client=client,
+            )
+        )
+    assert error in out["error"]
 
 
 @pytest.mark.asyncio

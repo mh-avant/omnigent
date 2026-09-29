@@ -1642,6 +1642,7 @@ def register_core_routes(
         project: str | None = Query(default=None),
         pinned: bool = Query(default=False),
         visibility: str = Query(default="all", pattern="^(all|mine|shared|archived)$"),
+        updated_after: int | None = Query(default=None, ge=0),
     ) -> PaginatedList:
         """
         List sessions with cursor-based pagination.
@@ -1695,6 +1696,9 @@ def register_core_routes(
             owned. ``"archived"`` returns only archived sessions.
             ``"all"`` (default) returns all accessible non-archived
             sessions, matching the legacy behaviour.
+        :param updated_after: When set, only return sessions whose
+            ``updated_at`` (Unix epoch seconds of last activity) is
+            strictly later than this value. ``None`` disables the filter.
         :returns: A :class:`PaginatedList` of
             :class:`SessionListItem`.
         """
@@ -1782,6 +1786,7 @@ def register_core_routes(
             pinned=pinned,
             # Pins are per-user: filter to the caller's own pin key.
             pinned_owner=user_id,
+            updated_after=updated_after,
         )
         # Side chats surface only as Workspace-rail tabs, so drop any
         # side-chat-labeled fork from the sidebar list (it is still a normal

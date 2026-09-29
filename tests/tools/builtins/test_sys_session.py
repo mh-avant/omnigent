@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any, cast
 
 import pytest
 
@@ -334,7 +335,10 @@ def test_peek_schema_required_fields_and_no_extra_props() -> None:
         "tail_items",
         "content_max_chars",
         "content_offset_chars",
+        "order",
+        "after",
     }
+    assert params["properties"]["order"]["enum"] == ["desc", "asc"]
 
 
 def test_peek_schema_tail_items_bounds() -> None:
@@ -913,6 +917,112 @@ def test_peek_no_pending_elicitation_when_index_empty(
     assert all(item["type"] != "pending_elicitation" for item in items)
 
 
+def _append_user_texts(session_fixture: _Fixture, texts: list[str]) -> None:
+    """Append one user message per text to the fixture's child session."""
+    session_fixture.conv_store.append(
+        session_fixture.child_conv_id,
+        [
+            NewConversationItem(
+                type="message",
+                response_id="resp_paging",
+                data=MessageData(role="user", content=[{"type": "input_text", "text": text}]),
+            )
+            for text in texts
+        ],
+    )
+
+
+def _peek(session_fixture: _Fixture, **arguments: object) -> dict[str, Any]:
+    """Invoke ``sys_session_get_history`` on the fixture child and decode it."""
+    raw = SysSessionGetHistoryTool().invoke(
+        json.dumps({"conversation_id": session_fixture.child_conv_id, **arguments}),
+        session_fixture.ctx,
+    )
+    return cast(dict[str, Any], json.loads(raw))
+
+
+def test_peek_forward_paging_walks_whole_session(session_fixture: _Fixture) -> None:
+    """
+    ``order='asc'`` reads from the first item and ``next_cursor`` pages
+    forward until ``has_more`` is false, visiting every item exactly once.
+    """
+    _append_user_texts(session_fixture, ["m3", "m4", "m5"])
+
+    first = _peek(session_fixture, order="asc", tail_items=2)
+    assert [i["content"] for i in first["items"]] == [
+        "find the auth bug",
+        "looking at handlers.py",
+    ]
+    assert first["has_more"] is True
+
+    second = _peek(session_fixture, after=first["next_cursor"], tail_items=2)
+    assert [i["content"] for i in second["items"]] == ["m3", "m4"]
+    assert second["has_more"] is True
+
+    third = _peek(session_fixture, after=second["next_cursor"], tail_items=2)
+    assert [i["content"] for i in third["items"]] == ["m5"]
+    assert third["has_more"] is False
+
+    # Caught up: nothing new, and the cursor stays put for the next poll.
+    idle = _peek(session_fixture, after=third["next_cursor"])
+    assert idle["items"] == []
+    assert idle["has_more"] is False
+    assert idle["next_cursor"] == third["next_cursor"]
+
+
+def test_peek_tail_cursor_resumes_with_new_items(session_fixture: _Fixture) -> None:
+    """A default tail read's ``next_cursor`` returns only later items."""
+    tail = _peek(session_fixture)
+    # Nothing follows the newest item, and this tail is the whole session.
+    assert (tail["has_more"], tail["has_older"]) == (False, False)
+    newest = _peek(session_fixture, tail_items=1)
+    assert (newest["has_more"], newest["has_older"]) == (False, True)
+
+    _append_user_texts(session_fixture, ["later"])
+    resumed = _peek(session_fixture, after=tail["next_cursor"])
+    assert [i["content"] for i in resumed["items"]] == ["later"]
+    assert resumed["has_more"] is False
+
+
+def test_peek_forward_page_defers_pending_elicitation_to_last_page(
+    session_fixture: _Fixture,
+) -> None:
+    """Parked prompts are appended only once a forward read reaches the end."""
+    pending_elicitations.record_publish(
+        session_fixture.child_conv_id,
+        {
+            "type": "response.elicitation_request",
+            "elicitation_id": "elicit_paging",
+            "params": {"mode": "form", "message": "Pick one", "requestedSchema": {}},
+        },
+    )
+    first = _peek(session_fixture, order="asc", tail_items=1)
+    assert all(i["type"] != "pending_elicitation" for i in first["items"])
+    last = _peek(session_fixture, after=first["next_cursor"], tail_items=1)
+    assert last["has_more"] is False
+    assert last["items"][-1]["type"] == "pending_elicitation"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        pytest.param({"after": "item_missing"}, "invalid_cursor", id="unknown-cursor"),
+        pytest.param({"after": ""}, "after must be a non-empty item id string", id="empty"),
+        pytest.param({"order": "sideways"}, "order must be 'asc' or 'desc'", id="bad-order"),
+        pytest.param(
+            {"order": "desc", "after": "item_x"}, "after requires order='asc'", id="desc-after"
+        ),
+    ],
+)
+def test_peek_rejects_invalid_paging_arguments(
+    session_fixture: _Fixture,
+    arguments: dict[str, object],
+    error: str,
+) -> None:
+    """Malformed or unresolvable paging arguments return a model-facing error."""
+    assert error in _peek(session_fixture, **arguments)["error"]
+
+
 def test_peek_default_tail_when_omitted(session_fixture: _Fixture) -> None:
     """
     Omitting ``tail_items`` falls back to ``_HISTORY_DEFAULT_TAIL``.
@@ -1438,6 +1548,9 @@ def test_session_list_schema_exposes_bounded_pagination() -> None:
     assert "default" not in properties["limit"]
     assert properties["limit"]["maximum"] == 100
     assert properties["cursor"]["type"] == "string"
+    assert properties["updated_after"]["type"] == "string"
+    assert properties["order_by"]["enum"] == ["created", "updated"]
+    assert properties["ownership"]["enum"] == ["any", "mine", "shared"]
 
 
 def test_close_unknown_conversation_id_returns_not_found(

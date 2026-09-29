@@ -13299,6 +13299,24 @@
               "title": "Visibility",
               "type": "string"
             }
+          },
+          {
+            "description": "When set, only return sessions whose `updated_at` (Unix epoch seconds of last activity) is strictly later than this value. `None` disables the filter.",
+            "in": "query",
+            "name": "updated_after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated After"
+            }
           }
         ],
         "responses": {
