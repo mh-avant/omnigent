@@ -46,6 +46,7 @@ vi.mock("@/lib/mcpRegistry", () => ({
   authorizeRegistryService: vi.fn(),
   registryRequest: vi.fn(),
 }));
+import { useHostProviders } from "@/hooks/useHostProviders";
 import { composerContextToLabels } from "@/lib/composerContextAdapters";
 import { clearOptimisticTitles, getOptimisticTitle } from "@/lib/optimisticTitles";
 import { clearSessionDrafts, setSessionDraft } from "@/lib/sessionDrafts";
@@ -130,6 +131,9 @@ vi.mock("@/lib/identity", () => ({
   authenticatedFetch: vi.fn(),
   getCurrentUserId: vi.fn(() => null),
   resolveIdentity: vi.fn(async () => null),
+}));
+vi.mock("@/hooks/useHostProviders", () => ({
+  useHostProviders: vi.fn(() => ({ data: [] })),
 }));
 vi.mock("@/hooks/useHosts", () => ({
   useHosts: vi.fn(),
@@ -805,6 +809,37 @@ describe("NewChatLandingScreen create flow", () => {
 
     // On success the screen routes to the freshly created session.
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith("/c/conv_new"));
+  });
+
+  it("posts the account picked for the session as provider_override", async () => {
+    setAgents([agent({ id: "ag_native", name: "claude-native-ui", display_name: "Claude Code" })]);
+    vi.mocked(useHostProviders).mockReturnValue({
+      data: [
+        { name: "max1", kind: "subscription", label: "claude", default: true, ready: true },
+        { name: "max2", kind: "subscription", label: "claude", default: false, ready: true },
+      ],
+    } as unknown as ReturnType<typeof useHostProviders>);
+    vi.mocked(authenticatedFetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "conv_new" }),
+    } as unknown as Response);
+
+    renderLanding();
+    await waitForWorkspaceSeed();
+    // The account choice lives in the harness menu, not a separate toolbar button.
+    expect(screen.queryByTestId("new-chat-landing-agent-accounts")).toBeNull();
+    openAgentModels("ag_native");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-account-max2"));
+    fireEvent.keyDown(screen.getByTestId("new-chat-landing-agent-accounts"), { key: "Escape" });
+    typeMessage("inspect the repo");
+    fireEvent.click(screen.getByTestId("new-chat-landing-submit"));
+
+    await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+    const [, init] = vi.mocked(authenticatedFetch).mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).provider_override).toBe("max2");
+    vi.mocked(useHostProviders).mockReturnValue({ data: [] } as unknown as ReturnType<
+      typeof useHostProviders
+    >);
   });
 
   it("resolves a navigate-first create from the exact-token top-level pushed row", async () => {

@@ -38,6 +38,7 @@ import type { ReactNode } from "react";
 import { authenticatedFetch } from "@/lib/identity";
 import type { Host } from "@/hooks/useHosts";
 import { useHostModelOptions, useHosts } from "@/hooks/useHosts";
+import { useHostProviders, type HostProvider } from "@/hooks/useHostProviders";
 import type { AvailableAgent } from "@/hooks/useAvailableAgents";
 import { useAvailableAgents } from "@/hooks/useAvailableAgents";
 import type { ProjectConfig } from "@/lib/projectsApi";
@@ -74,6 +75,9 @@ vi.mock("@/lib/identity", () => ({
   authenticatedFetch: vi.fn(),
   getCurrentUserId: vi.fn(() => null),
   resolveIdentity: vi.fn(async () => null),
+}));
+vi.mock("@/hooks/useHostProviders", () => ({
+  useHostProviders: vi.fn(() => ({ data: [] })),
 }));
 vi.mock("@/hooks/useHosts", () => ({
   useHosts: vi.fn(),
@@ -1125,5 +1129,113 @@ describe("NewChatLandingScreen global always-use-worktree default", () => {
     const body = await submitAndReadBody();
     expect(body.workspace).toBe(REPO);
     expect(body.git).toBeUndefined();
+  });
+});
+
+describe("NewChatLandingScreen project account", () => {
+  const MAX1: HostProvider = {
+    name: "max1",
+    kind: "subscription",
+    label: "claude CLI login (~/.claude)",
+    default: true,
+    ready: true,
+  };
+  const MAX2: HostProvider = { ...MAX1, name: "max2", label: "~/.claude-max2", default: false };
+
+  function setHostProviders(data: HostProvider[] | undefined): void {
+    vi.mocked(useHostProviders).mockReturnValue({ data } as ReturnType<typeof useHostProviders>);
+  }
+
+  afterEach(() => setHostProviders([]));
+
+  // Accounts are a Claude feature, so these run on the Claude Code harness.
+  beforeEach(() => {
+    vi.mocked(useAvailableAgents).mockReturnValue({
+      data: [
+        agent({
+          id: "ag_claude",
+          name: "claude-native-ui",
+          display_name: "Claude Code",
+          harness: "claude-native",
+        }),
+      ],
+    } as ReturnType<typeof useAvailableAgents>);
+    vi.mocked(useHostModelOptions).mockReturnValue({
+      data: [{ id: "opus", displayName: "Opus" }],
+    } as ReturnType<typeof useHostModelOptions>);
+  });
+
+  /** Open the harness menu's config page, where the Account section lives. */
+  function openAccounts(): void {
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-config-ag_claude"));
+  }
+
+  function closeAccounts(): void {
+    fireEvent.keyDown(screen.getByTestId("new-chat-landing-agent-accounts"), { key: "Escape" });
+  }
+
+  function expectCheckedAccount(name: string): void {
+    expect(screen.getByTestId(`new-chat-landing-agent-account-${name}`)).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  }
+
+  it("pre-selects the project's account and posts it as provider_override", async () => {
+    setHostProviders([MAX1, MAX2]);
+    setProjectConfig({ host_id: "host_1", workspace: REPO, provider: "max2" });
+    renderLanding();
+
+    await waitFor(() => expect(screen.getByTestId("new-chat-landing-agent-select")).toBeEnabled());
+    openAccounts();
+    expectCheckedAccount("max2");
+    closeAccounts();
+    expect(screen.queryByTestId("new-chat-landing-project-account-fallback")).toBeNull();
+    const body = await submitAndReadBody();
+    expect(body.provider_override).toBe("max2");
+  });
+
+  it("lets the user override the project's account", async () => {
+    setHostProviders([MAX1, MAX2]);
+    setProjectConfig({ host_id: "host_1", workspace: REPO, provider: "max2" });
+    renderLanding();
+
+    await waitFor(() => expect(screen.getByTestId("new-chat-landing-agent-select")).toBeEnabled());
+    openAccounts();
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-account-max1"));
+    expectCheckedAccount("max1");
+    closeAccounts();
+    const body = await submitAndReadBody();
+    expect("provider_override" in body).toBe(false);
+  });
+
+  it("falls back to the default with a visible hint when the host doesn't list it", async () => {
+    setHostProviders([MAX1, MAX2]);
+    setProjectConfig({ host_id: "host_1", workspace: REPO, provider: "codex-alt" });
+    renderLanding();
+
+    expect(
+      await screen.findByTestId("new-chat-landing-project-account-fallback"),
+    ).toHaveTextContent(/"codex-alt" isn't available for this harness on this host/);
+    openAccounts();
+    expectCheckedAccount("max1");
+    closeAccounts();
+    const body = await submitAndReadBody();
+    expect("provider_override" in body).toBe(false);
+  });
+
+  it("keeps today's behaviour for a project without an account", async () => {
+    setHostProviders([MAX1, MAX2]);
+    setProjectConfig({ host_id: "host_1", workspace: REPO });
+    renderLanding();
+
+    await waitFor(() => expect(screen.getByTestId("new-chat-landing-agent-select")).toBeEnabled());
+    openAccounts();
+    expectCheckedAccount("max1");
+    closeAccounts();
+    expect(screen.queryByTestId("new-chat-landing-project-account-fallback")).toBeNull();
+    const body = await submitAndReadBody();
+    expect("provider_override" in body).toBe(false);
   });
 });

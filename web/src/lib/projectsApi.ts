@@ -51,6 +51,12 @@ export interface ProjectConfig {
    * the harness's own configured default.
    */
   model?: string;
+  /**
+   * Default account for new sessions: the name of a `providers:` entry on the
+   * session's host (e.g. "claude-max2"). Where the host can't run the chosen
+   * harness on it, the composer falls back to the host default and says so.
+   */
+  provider?: string;
 }
 
 /** A first-class project. Mirrors the `ProjectObject` response shape. */

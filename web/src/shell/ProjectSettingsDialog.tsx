@@ -7,7 +7,8 @@
 // whether new sessions start in a fresh git worktree, the base branch a
 // worktree forks from (which overrides the user-global default in Settings ›
 // Git), and — when the default agent is a native harness with a model choice
-// (Claude Code / Codex) — a default model for new sessions. Reasoning-effort /
+// (Claude Code / Codex) — a default model for new sessions, plus the account
+// (a host `providers:` entry) new sessions run on. Reasoning-effort /
 // harness stay per-agent run config, out of scope here. The host and agent
 // pickers reuse the composer's components; the working directory reuses its
 // filesystem browser (inline, so it scrolls inside the modal).
@@ -36,6 +37,7 @@ import { Switch } from "@/components/ui/switch";
 import { useProjectConfig, useUpdateProjectConfig } from "@/hooks/useConversations";
 import { useAvailableAgents } from "@/hooks/useAvailableAgents";
 import { useHostModelOptions, useHosts } from "@/hooks/useHosts";
+import { useHostProviders } from "@/hooks/useHostProviders";
 import { selectableSessionAgents } from "@/lib/agentGrouping";
 import { sandboxOptionLabel } from "@/lib/capabilities";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
@@ -140,6 +142,8 @@ export function ProjectSettingsDialog({
   // Default model for new sessions, only meaningful when the default agent is
   // a native harness with a model choice; NONE stores no default (unset key).
   const [model, setModel] = useState<string>(NONE);
+  // Default account (provider name); NONE runs on the host's default.
+  const [provider, setProvider] = useState<string>(NONE);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
 
   // The agent picker and the host Select portal their dropdowns OUTSIDE
@@ -190,6 +194,7 @@ export function ProjectSettingsDialog({
     setBaseBranch(c.base_branch ?? "");
     setAgentId(c.agent_id ?? null);
     setModel(c.model ?? NONE);
+    setProvider(c.provider ?? NONE);
     setWorkspaceOpen(false);
   }, [open, stored, loadFailed]);
 
@@ -232,6 +237,9 @@ export function ProjectSettingsDialog({
     const agentUnresolved = agentId != null && selectedAgent === null;
     if (supportsModelDefault && model !== NONE) config.model = model;
     else if (!agentUnresolved) delete config.model;
+    // A sandbox brings its own credentials, so a host account can't apply.
+    if (provider !== NONE && hostId !== SANDBOX_HOST_CHOICE) config.provider = provider;
+    else delete config.provider;
 
     updateConfig.mutate(
       { id: projectId, name: projectName, config },
@@ -303,6 +311,23 @@ export function ProjectSettingsDialog({
   // Offer the control only for a model-taking harness; when it can only render
   // "No default" it stays visible but disabled with an explanatory hint.
   const supportsModelDefault = harnessTakesModel;
+  // Accounts are listed per host and harness; with no host default, list the
+  // first online host's, like the model catalog above.
+  const accountHarness = selectedNativeSpec?.harness ?? selectedAgent?.harness ?? null;
+  const accountHostId = hostId === SANDBOX_HOST_CHOICE ? null : modelCatalogHostId;
+  const accountHost = onlineHosts.find((h) => h.host_id === accountHostId) ?? null;
+  const { data: accountOptions = [] } = useHostProviders(accountHostId, accountHarness);
+  // Keep unlisted accounts (the stored one included, so it is an option before
+  // the draft seeds to it) as labeled items so saving can't drop them.
+  const unlistedProviders = [
+    ...new Set([stored?.provider, provider].filter((p): p is string => !!p && p !== NONE)),
+  ].filter((name) => !accountOptions.some((p) => p.name === name));
+  const accountHint =
+    hostId === SANDBOX_HOST_CHOICE
+      ? "Sandbox sessions use the sandbox's own credentials"
+      : accountHost === null || accountHarness === null
+        ? "Pick a host and an agent to list their accounts"
+        : `Account new sessions run on (as listed on ${accountHost.name}); falls back to the host default where unavailable`;
   // The host the agent picker's readiness badges check against (its config
   // hints show whether a harness is set up there). Null when no concrete host.
   const warningHost = onlineHosts.find((h) => h.host_id === browsableHostId) ?? null;
@@ -543,6 +568,41 @@ export function ProjectSettingsDialog({
               </Select>
             </Field>
           )}
+
+          <Field label="Account" hint={accountHint}>
+            <Select
+              value={hostId === SANDBOX_HOST_CHOICE ? NONE : provider}
+              onValueChange={(v) => setProvider(v || NONE)}
+              onOpenChange={onDropdownOpenChange}
+              disabled={
+                isLoading ||
+                hostId === SANDBOX_HOST_CHOICE ||
+                (accountOptions.length === 0 && provider === NONE)
+              }
+            >
+              <SelectTrigger className="w-full" data-testid="project-settings-account">
+                <SelectValue placeholder="No default" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE}>No default</SelectItem>
+                {accountOptions.map((p) => (
+                  <SelectItem
+                    key={p.name}
+                    value={p.name}
+                    disabled={!p.ready}
+                    data-testid={`project-settings-account-${p.name}`}
+                  >
+                    {p.name}
+                    {p.default ? " (host default)" : ""}
+                    {p.ready ? "" : " · not signed in"}
+                  </SelectItem>
+                ))}
+                {unlistedProviders.map((name) => (
+                  <SelectItem key={name} value={name}>{`${name} (not listed here)`}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
 
           {loadFailed && (
             <p
