@@ -280,6 +280,7 @@ from omnigent.server.routes._sessions.helpers import (
     _get_runner_client,
     _handle_advise_models_mcp,
     _HostRunnerStopAttempt,
+    _inherited_provider_override,
     _invalidate_runner_backed_snapshot_state,
     _is_codex_native_subagent,
     _is_kiro_native_session,
@@ -358,6 +359,7 @@ from omnigent.server.routes._sessions.helpers import (
     _validated_cost_control_mode_override,
     _validated_harness_override,
     _validated_harness_override_executor_type,
+    _validated_provider_override,
     _validated_spec_smart_routing_harness,
     _validated_subagent_routing_override,
     _wait_for_managed_runner_tunnel,
@@ -1500,6 +1502,7 @@ def _build_session_response(
         llm_model=llm_model,
         harness=harness,
         model_override=conv.model_override,
+        provider_override=conv.provider_override,
         cost_control_mode_override=conv.cost_control_mode_override,
         subagent_routing_override=conv.subagent_routing_override,
         share_workspace_files=conv.share_workspace_files,
@@ -11461,6 +11464,36 @@ async def _create_session_from_existing_agent(
             _validated_harness_override, body.harness_override, agent
         )
 
+    provider_override = await asyncio.to_thread(
+        lambda: _validated_provider_override(
+            body.provider_override,
+            agent,
+            host_id=body.host_id,
+            host_type=body.host_type,
+            sub_agent_name=body.sub_agent_name,
+        )
+    )
+    if body.provider_override is not None:
+        from omnigent.host.frames import CAP_SESSION_PROVIDER
+
+        _registry: HostRegistry | None = getattr(request.app.state, "host_registry", None)
+        _conn = _registry.get(body.host_id) if _registry is not None and body.host_id else None
+        if _conn is not None and CAP_SESSION_PROVIDER not in _conn.hello.capabilities:
+            raise OmnigentError(
+                "Update the host to choose a provider per session.",
+                code=ErrorCode.INVALID_INPUT,
+            )
+    if provider_override is None and _parent_for_routing is not None:
+        # A sub-agent in the parent's family runs on the parent's account.
+        _parent = _parent_for_routing
+        provider_override = await asyncio.to_thread(
+            lambda: _inherited_provider_override(
+                _parent,
+                child_harness=_create_resolved_harness(agent, harness_override, agent_cache),
+                child_host_id=body.host_id,
+            )
+        )
+
     inference_snapshot = None
     selection_spec = None
     from omnigent.server.mcp_compatibility import registry_services, require_registry_mcp_runtime
@@ -11803,6 +11836,7 @@ async def _create_session_from_existing_agent(
                 "cost_control_mode_override": cost_control_mode_override,
                 "subagent_routing_override": subagent_routing_override,
                 "harness_override": harness_override,
+                "provider_override": provider_override,
             }
         )
         with creation_stage("create_persistence_ms"):
@@ -11824,6 +11858,7 @@ async def _create_session_from_existing_agent(
                 cost_control_mode_override=cost_control_mode_override,
                 subagent_routing_override=subagent_routing_override,
                 harness_override=harness_override,
+                provider_override=provider_override,
                 **snapshot_kwargs,
             )
     except NameAlreadyExistsError as exc:

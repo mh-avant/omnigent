@@ -44,6 +44,7 @@ from omnigent.host.frames import (
     HostMcpServersResultFrame,
     HostMcpToolsResultFrame,
     HostPluginsResultFrame,
+    HostProvidersResultFrame,
     HostSkillContentResultFrame,
     HostSkillsResultFrame,
 )
@@ -184,6 +185,11 @@ def _fail_pending_skills(conn: HostConnection) -> None:
 def _fail_pending_mcp_servers(conn: HostConnection) -> None:
     """Fail MCP inventory requests as soon as their host disappears."""
     _fail_pending_inventory(conn.pending_mcp_servers, conn.host_id)
+
+
+def _fail_pending_providers(conn: HostConnection) -> None:
+    """Fail provider listings as soon as their host disappears."""
+    _fail_pending_inventory(conn.pending_providers, conn.host_id)
 
 
 # How long a runner exit report stays answerable, and how many are kept.
@@ -412,6 +418,7 @@ class HostConnection:
     :param pending_mcp_servers: Per-``request_id`` futures for MCP inventory requests.
     :param pending_skill_content: Per-request futures for transient SKILL.md reads.
     :param pending_mcp_tools: Per-request futures for lazy MCP discovery.
+    :param pending_providers: Per-``request_id`` futures for provider listings.
     """
 
     workspace_id: int
@@ -499,6 +506,9 @@ class HostConnection:
         default_factory=dict
     )
     pending_mcp_servers: dict[str, asyncio.Future[HostMcpServersResultFrame]] = field(
+        default_factory=dict,
+    )
+    pending_providers: dict[str, asyncio.Future[HostProvidersResultFrame]] = field(
         default_factory=dict,
     )
     # Import streams one session per frame, so the tunnel pushes each onto a
@@ -616,6 +626,7 @@ class HostRegistry:
                 _fail_pending_mcp_tools(old)
                 _fail_pending_skills(old)
                 _fail_pending_mcp_servers(old)
+                _fail_pending_providers(old)
             self._hosts[key] = conn
             if hello.interactive_shells is not None:
                 self._interactive_shells[host_id] = normalize_interactive_shells(
@@ -665,6 +676,7 @@ class HostRegistry:
         _fail_pending_mcp_tools(removed)
         _fail_pending_skills(removed)
         _fail_pending_mcp_servers(removed)
+        _fail_pending_providers(removed)
         return True
 
     def mark_frame_seen(self, conn: HostConnection) -> bool:

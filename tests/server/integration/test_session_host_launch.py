@@ -37,6 +37,7 @@ from omnigent.cli_invocation import cli_invocation
 from omnigent.entities import Conversation
 from omnigent.host.connect import HostProcess
 from omnigent.host.frames import (
+    CAP_SESSION_PROVIDER,
     HARNESS_NOT_CONFIGURED_ERROR_CODE,
     WORKSPACE_MISSING_ERROR_CODE,
     HostHelloFrame,
@@ -157,12 +158,15 @@ def app(runtime_init: None, db_uri: str, tmp_path) -> FastAPI:
     )
 
 
-async def _connect_host(app: FastAPI) -> ApplicationCommunicator:
+async def _connect_host(
+    app: FastAPI, capabilities: list[str] | None = None
+) -> ApplicationCommunicator:
     """Connect a mock host over the WebSocket tunnel and wait for it
     to register in the app's host registry.
 
     :param app: The FastAPI app under test (its ``state.host_registry``
         is the same instance the session-create launch path reads).
+    :param capabilities: Capabilities the host announces, if any.
     :returns: The connected ASGI communicator, ready to exchange frames.
     """
     path = f"/v1/hosts/{_HOST_ID}/tunnel"
@@ -172,7 +176,12 @@ async def _connect_host(app: FastAPI) -> ApplicationCommunicator:
     assert accepted["type"] == "websocket.accept"
 
     hello = encode_host_frame(
-        HostHelloFrame(version="0.1.0-test", frame_protocol_version=1, name="laptop")
+        HostHelloFrame(
+            version="0.1.0-test",
+            frame_protocol_version=1,
+            name="laptop",
+            capabilities=capabilities or [],
+        )
     )
     await comm.send_input({"type": "websocket.receive", "text": hello})
     registry = app.state.host_registry
@@ -465,6 +474,72 @@ async def test_inline_launch_binds_runner_and_returns_host(
     assert conv.runner_id == body["runner_id"]
     assert conv.host_id == _HOST_ID
     assert conv.workspace == _WORKSPACE
+
+
+async def test_inline_launch_carries_the_session_provider(
+    client: httpx.AsyncClient,
+    app: FastAPI,
+    db_uri: str,
+) -> None:
+    """A chosen provider is persisted and handed to the host at launch.
+
+    The host resolves it against its own ``providers:``; without it in the
+    frame the session would silently run on the host's default account.
+    """
+    comm = await _connect_host(app, [CAP_SESSION_PROVIDER])
+    agent = await create_test_agent(client)
+
+    responder = asyncio.create_task(_serve_one_launch(comm, launch_status="launched"))
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent["id"],
+            "host_id": _HOST_ID,
+            "workspace": _WORKSPACE,
+            "provider_override": "claude-max2",
+        },
+    )
+    frame = await responder
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["provider_override"] == "claude-max2"
+    assert frame.provider == "claude-max2"
+    conv = SqlAlchemyConversationStore(db_uri).get_conversation(resp.json()["id"])
+    assert conv is not None
+    assert conv.provider_override == "claude-max2"
+
+
+@pytest.mark.parametrize(
+    "payload,capabilities,detail",
+    [
+        ({}, [CAP_SESSION_PROVIDER], "requires a session bound to a connected host"),
+        ({"host_id": _HOST_ID, "workspace": _WORKSPACE}, [], "Update the host"),
+        (
+            {"host_id": _HOST_ID, "workspace": _WORKSPACE, "provider_override": "../x"},
+            [CAP_SESSION_PROVIDER],
+            "invalid provider_override",
+        ),
+    ],
+)
+async def test_session_provider_is_rejected_where_it_cannot_apply(
+    client: httpx.AsyncClient,
+    app: FastAPI,
+    payload: dict[str, str],
+    capabilities: list[str],
+    detail: str,
+) -> None:
+    """A provider choice fails the create instead of being ignored."""
+    comm = await _connect_host(app, capabilities)
+    agent = await create_test_agent(client)
+
+    resp = await client.post(
+        "/v1/sessions",
+        json={"agent_id": agent["id"], "provider_override": "claude-max2", **payload},
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert detail in resp.text
+    del comm
 
 
 async def test_inline_launch_stamps_terminal_view_label_at_creation(

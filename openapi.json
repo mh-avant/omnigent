@@ -3225,6 +3225,62 @@
         "title": "HostModelOptionsResponse",
         "type": "object"
       },
+      "HostProviderSummary": {
+        "description": "A provider a session can choose, without credentials.",
+        "properties": {
+          "default": {
+            "description": "Whether sessions use it when none is chosen.",
+            "title": "Default",
+            "type": "boolean"
+          },
+          "kind": {
+            "description": "`subscription`, `key`, `gateway`, `local`, `databricks`, `cli-config`, or `bedrock`.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "description": "Where it authenticates, e.g. `\"claude CLI login (~/.claude-max2)\"`.",
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "description": "The `providers:` entry name, e.g. `\"claude-max2\"`.",
+            "title": "Name",
+            "type": "string"
+          },
+          "ready": {
+            "description": "`False` when a subscription account is not logged in.",
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "label",
+          "default",
+          "ready"
+        ],
+        "title": "HostProviderSummary",
+        "type": "object"
+      },
+      "HostProvidersResponse": {
+        "description": "Providers a host can run the requested harness on.",
+        "properties": {
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/HostProviderSummary"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "title": "HostProvidersResponse",
+        "type": "object"
+      },
       "ImportFailureRef": {
         "description": "One session that could not be imported, with a user-facing reason.\n\n`external_session_id` / `source` name the source session when known (a\nhost that reports only a count leaves them `None`); `reason` explains the\nfailure so the UI can show it instead of an anonymous \"N failed\". Also the\nshape of each `{\"event\": \"failed\", ...}` line on the stream endpoint.",
         "properties": {
@@ -8047,6 +8103,18 @@
             ],
             "title": "Project Id"
           },
+          "provider_override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The host provider the session was created on, e.g. `\"claude-max2\"`; `None` for the family default.",
+            "title": "Provider Override"
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -11874,6 +11942,59 @@
           }
         },
         "summary": "Get Plugins",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
+    "/v1/hosts/{host_id}/providers": {
+      "get": {
+        "description": "List the providers configured on a host that can run *harness*.\n\nNames and non-secret labels only; the caller must own the host.",
+        "operationId": "get_host_providers_v1_hosts__host_id__providers_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "harness",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Harness",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostProvidersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Host Providers",
         "tags": [
           "hosts"
         ]

@@ -1178,6 +1178,7 @@ def create_hosts_router(
                 ),
                 # The session had no runner bound, so nothing is superseded.
                 superseded_runner_ids=(),
+                provider=target.conv.provider_override,
             )
         )
         try:

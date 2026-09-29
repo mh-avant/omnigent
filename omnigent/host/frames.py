@@ -73,6 +73,8 @@ CAP_SKILL_CONTENT = "skill_content"
 CAP_MCP_TOOLS = "mcp_tools"
 CAP_REFRESH_HARNESSES = "refresh_harnesses"
 CAP_MCP_REGISTRY = "mcp_registry"
+# The host honors a launch frame's ``provider`` and answers ``host.providers``:
+CAP_SESSION_PROVIDER = "session_provider"
 
 # Every capability THIS build supports; reported verbatim in the hello frame.
 HOST_CAPABILITIES: list[str] = [
@@ -85,6 +87,7 @@ HOST_CAPABILITIES: list[str] = [
     CAP_MCP_REGISTRY,
     CAP_MCP_INVENTORY,
     CAP_HARNESS_STARTUP,
+    CAP_SESSION_PROVIDER,
     CAP_REFRESH_HARNESSES,
 ]
 
@@ -183,6 +186,8 @@ class HostFrameKind(str, Enum):
     HARNESS_STARTUP_RESULT = "host.harness_startup_result"
     MCP_SERVERS = "host.mcp_servers"
     MCP_SERVERS_RESULT = "host.mcp_servers_result"
+    PROVIDERS = "host.providers"
+    PROVIDERS_RESULT = "host.providers_result"
     IMPORT_LOCAL = "host.import_local"
     IMPORT_LOCAL_BY_ID = "host.import_local_by_id"
     IMPORT_LOCAL_SESSION = "host.import_local_session"
@@ -301,6 +306,8 @@ class HostLaunchRunnerFrame:
         falls back to stopping every runner launched for ``session_id``; an
         empty tuple stops none, e.g. after /clear moved the old runner to
         another session.
+    :param provider: The session's chosen ``providers:`` entry on this host,
+        e.g. ``"claude-max2"``; ``None`` uses the family defaults.
     """
 
     request_id: str
@@ -310,6 +317,7 @@ class HostLaunchRunnerFrame:
     harness: str | None = None
     inference_config: dict[str, Any] | None = None
     superseded_runner_ids: tuple[str, ...] | None = None
+    provider: str | None = None
 
 
 @dataclass
@@ -1187,6 +1195,29 @@ class HostMcpToolsResultFrame:
 
 
 @dataclass
+class HostProvidersFrame:
+    """Server → host: list the providers a harness can run on."""
+
+    request_id: str
+    harness: str
+
+
+@dataclass
+class HostProvidersResultFrame:
+    """Host → server: provider choices for a harness, never credentials.
+
+    :param providers: One row per provider, e.g. ``{"name": "claude-max2",
+        "kind": "subscription", "label": "claude CLI login (~/.claude-max2)",
+        "default": False, "ready": True}``.
+    """
+
+    request_id: str
+    status: str
+    providers: list[dict[str, str | bool]] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
 class HostImportedLocalSession:
     """One local transcript the host read, normalized for import.
 
@@ -1358,6 +1389,8 @@ HostFrame = (
     | HostHarnessStartupResultFrame
     | HostMcpServersFrame
     | HostMcpServersResultFrame
+    | HostProvidersFrame
+    | HostProvidersResultFrame
     | HostImportLocalFrame
     | HostImportLocalByIdFrame
     | HostImportLocalSessionFrame
@@ -1445,6 +1478,7 @@ def encode_host_frame(frame: HostFrame) -> str:
             "session_id": frame.session_id,
             "harness": frame.harness,
             "inference_config": frame.inference_config,
+            "provider": frame.provider,
         }
         if frame.superseded_runner_ids is not None:
             payload["superseded_runner_ids"] = list(frame.superseded_runner_ids)
@@ -1877,6 +1911,24 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "error": frame.error,
             }
         )
+    if isinstance(frame, HostProvidersFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.PROVIDERS.value,
+                "request_id": frame.request_id,
+                "harness": frame.harness,
+            }
+        )
+    if isinstance(frame, HostProvidersResultFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.PROVIDERS_RESULT.value,
+                "request_id": frame.request_id,
+                "status": frame.status,
+                "providers": frame.providers,
+                "error": frame.error,
+            }
+        )
     if isinstance(frame, HostImportLocalFrame):
         return _encode_payload(
             {
@@ -2292,6 +2344,13 @@ def _decode_known_host_frame(
             )
         case HostFrameKind.MCP_TOOLS_RESULT:
             return _decode_mcp_tools_result(msg)
+        case HostFrameKind.PROVIDERS:
+            return HostProvidersFrame(
+                request_id=_required_str(msg, "request_id"),
+                harness=_required_str(msg, "harness"),
+            )
+        case HostFrameKind.PROVIDERS_RESULT:
+            return _decode_providers_result(msg)
         case HostFrameKind.IMPORT_LOCAL:
             return _decode_import_local(msg)
         case HostFrameKind.IMPORT_LOCAL_BY_ID:
@@ -2370,6 +2429,7 @@ def _decode_launch_runner(msg: _JsonObject) -> HostLaunchRunnerFrame:
             if "superseded_runner_ids" in msg
             else None
         ),
+        provider=_optional_nullable_str(msg, "provider"),
     )
 
 
@@ -2969,6 +3029,36 @@ def _decode_plugins_result(msg: _JsonObject) -> HostPluginsResultFrame:
         request_id=_required_str(msg, "request_id"),
         status=_required_str(msg, "status"),
         plugins=plugins,
+        error=_optional_nullable_str(msg, "error"),
+    )
+
+
+_PROVIDER_STR_FIELDS = ("name", "kind", "label")
+_PROVIDER_BOOL_FIELDS = ("default", "ready")
+
+
+def _decode_providers_result(msg: _JsonObject) -> HostProvidersResultFrame:
+    """Decode provider choices, keeping only the allow-listed fields."""
+    raw = msg.get("providers", [])
+    if not isinstance(raw, list):
+        raise ValueError("frame field must be a list of providers: 'providers'")
+    providers: list[dict[str, str | bool]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("frame field must be a list of providers: 'providers'")
+        row: dict[str, str | bool] = {
+            key: _required_str(item, key) for key in _PROVIDER_STR_FIELDS
+        }
+        for key in _PROVIDER_BOOL_FIELDS:
+            value = item.get(key)
+            if not isinstance(value, bool):
+                raise ValueError(f"provider field must be a boolean: {key!r}")
+            row[key] = value
+        providers.append(row)
+    return HostProvidersResultFrame(
+        request_id=_required_str(msg, "request_id"),
+        status=_required_str(msg, "status"),
+        providers=providers,
         error=_optional_nullable_str(msg, "error"),
     )
 

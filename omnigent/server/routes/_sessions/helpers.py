@@ -2043,6 +2043,97 @@ def _validated_harness_override(value: str | None, agent: Agent) -> str | None:
     return value if namespaced_acp else canonical
 
 
+# A ``providers:`` key: the server only checks its shape; the host owns the list.
+_PROVIDER_OVERRIDE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def _validated_provider_override(
+    value: str | None,
+    agent: Agent,
+    *,
+    host_id: str | None,
+    host_type: str,
+    sub_agent_name: str | None = None,
+) -> str | None:
+    """
+    Validate a session-create ``provider_override``.
+
+    The name is resolved against the host's ``providers:`` when the host
+    launches the runner, so here it only needs a sane shape, a host to resolve
+    on, and an agent that does not already pin its own credential.
+
+    :param value: The requested provider name, e.g. ``"claude-max2"``.
+    :param agent: The bound agent row.
+    :param host_id: The session's host, or ``None``.
+    :param host_type: ``"external"`` or ``"managed"``.
+    :param sub_agent_name: The sub-agent whose spec runs, if any.
+    :returns: *value*, or ``None`` when unset.
+    :raises OmnigentError: ``invalid_input`` when the name is malformed, the
+        session is not bound to an external host, or the spec pins another
+        credential through ``executor.auth``.
+    """
+    if value is None:
+        return None
+    if not _PROVIDER_OVERRIDE_RE.fullmatch(value):
+        raise OmnigentError(
+            f"invalid provider_override {value!r}: expected a providers: entry name",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    if host_id is None or host_type != "external":
+        raise OmnigentError(
+            "provider_override selects one of a host's providers and requires a "
+            "session bound to a connected host",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    from omnigent.runtime import get_agent_cache
+    from omnigent.runtime.workflow import _find_spec_by_name
+    from omnigent.spec.types import ProviderAuth
+
+    try:
+        spec = (
+            get_agent_cache()
+            .load(agent.id, agent.bundle_location, expand_env=agent.session_id is None)
+            .spec
+        )
+    except (KeyError, AttributeError, ValueError, ImportError, OSError):
+        return value
+    if sub_agent_name:
+        spec = _find_spec_by_name(spec, sub_agent_name) or spec
+    auth = spec.executor.auth
+    if auth is not None and not (isinstance(auth, ProviderAuth) and auth.name == value):
+        raise OmnigentError(
+            f"agent {agent.name!r} pins its credential in executor.auth, so its "
+            "provider cannot be chosen per session",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    return value
+
+
+def _inherited_provider_override(
+    parent: Conversation | None, *, child_harness: str | None, child_host_id: str | None
+) -> str | None:
+    """
+    Return the parent's provider for a sub-agent that runs in the same family.
+
+    :param parent: The parent session, or ``None``.
+    :param child_harness: The child's canonical harness, e.g. ``"claude-native"``.
+    :param child_host_id: The child's host; ``None`` co-locates on the parent's runner.
+    :returns: The parent's ``provider_override`` when the child runs on the same
+        host and in the same provider family, else ``None``.
+    """
+    if parent is None or parent.provider_override is None:
+        return None
+    if child_host_id is not None and child_host_id != parent.host_id:
+        return None
+    from omnigent.onboarding.provider_config import provider_family_for_harness
+
+    child_family = provider_family_for_harness(child_harness)
+    parent_family = provider_family_for_harness(_resolve_harness(parent))
+    if child_family is None or child_family != parent_family:
+        return None
+    return parent.provider_override
+
+
 def _validated_harness_override_executor_type(agent: Agent) -> None:
     """Validate that *agent* is an ``executor.type: omnigent`` spec.
 
@@ -6234,6 +6325,7 @@ async def _launch_runner_on_host_locked(
                 # Only the binding we just replaced: an unbound session's old
                 # runner may now serve its /clear or /switch successor.
                 superseded_runner_ids=(superseded_runner_id,) if superseded_runner_id else (),
+                provider=conv.provider_override,
             )
         )
         try:
@@ -12101,6 +12193,7 @@ __all__ = [
     "_handle_mcp_tools_list",
     "_host_model_options_via_registry",
     "_if_none_match_matches",
+    "_inherited_provider_override",
     "_invalidate_runner_backed_snapshot_state",
     "_is_claude_native_subagent",
     "_is_codex_native_subagent",
@@ -12246,6 +12339,7 @@ __all__ = [
     "_validated_cost_control_mode_override",
     "_validated_harness_override",
     "_validated_harness_override_executor_type",
+    "_validated_provider_override",
     "_validated_spec_smart_routing_harness",
     "_validated_subagent_routing_override",
     "_wait_for_managed_runner_tunnel",

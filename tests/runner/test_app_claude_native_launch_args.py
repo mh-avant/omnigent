@@ -1152,6 +1152,70 @@ async def test_auto_create_claude_terminal_seeds_trust_with_launch_env(
     registry.launch_required_terminal.assert_awaited_once()
 
 
+@pytest.mark.parametrize("launch_dir", ["account", "other"])
+async def test_auto_create_claude_terminal_keeps_the_session_account(
+    bridge_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    launch_dir: str,
+) -> None:
+    """
+    A launch whose env moves Claude off the session's account fails before seeding.
+
+    The host exports the chosen account's directory, but an ``env`` wrapper
+    (or the agent's ``env``) is applied later and would otherwise run the pane
+    on another login.
+
+    :param launch_dir: Directory under ``tmp_path`` the wrapper selects.
+    """
+    from unittest.mock import Mock
+
+    from omnigent.errors import ErrorCode, OmnigentError
+    from omnigent.onboarding.provider_config import SESSION_PROVIDER_ENV
+    from omnigent.runner.resource_registry import SessionResourceRegistry
+
+    account = {"kind": "subscription", "cli": "claude", "config_dir": str(tmp_path / "account")}
+    config = {"providers": {"max2": account}}
+    seeded: list[Path] = []
+    registry = Mock(spec=SessionResourceRegistry)
+    registry.launch_required_terminal.side_effect = RuntimeError("stop after seeding")
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "max2")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account"))
+    monkeypatch.setattr("omnigent.onboarding.provider_config.load_config", lambda: config)
+    monkeypatch.setattr("omnigent.onboarding.subscription_accounts.load_config", lambda: config)
+    monkeypatch.setattr(
+        "omnigent.harnesses.claude_native.bridge.ensure_claude_workspace_trusted",
+        lambda workspace, env=None: seeded.append(workspace),
+    )
+    monkeypatch.setattr(
+        "omnigent.harness_startup_config.resolve_harness_command", lambda *_a, **_k: "env"
+    )
+    monkeypatch.setattr(
+        "omnigent.harness_startup_config.resolve_harness_args",
+        lambda _harness, cli_args, cfg=None: [
+            f"CLAUDE_CONFIG_DIR={tmp_path / launch_dir}",
+            "claude",
+            *cli_args,
+        ],
+    )
+
+    expected = RuntimeError if launch_dir == "account" else OmnigentError
+    with pytest.raises(expected) as failure:
+        await _auto_create_claude_terminal_for_test(
+            monkeypatch, session_id="conv_session_account", workspace=bridge_dir, registry=registry
+        )
+
+    if launch_dir == "account":
+        assert len(seeded) == 1
+        registry.launch_required_terminal.assert_awaited_once()
+    else:
+        assert isinstance(failure.value, OmnigentError)
+        assert failure.value.code == ErrorCode.HARNESS_NOT_CONFIGURED
+        assert "runs on account 'max2'" in failure.value.message
+        assert seeded == []
+        registry.launch_required_terminal.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "subagent_started,turn_started",
     [(True, True), (True, False), (False, True), (False, False)],

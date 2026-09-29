@@ -503,6 +503,7 @@ class ConversationStore(ABC):
         cost_control_mode_override: str | None = None,
         subagent_routing_override: str | None = None,
         harness_override: str | None = None,
+        provider_override: str | None = None,
     ) -> Conversation:
         """
         Create a new conversation. Generates a unique
@@ -565,6 +566,7 @@ class ConversationStore(ABC):
         :param cost_control_mode_override: Optional per-session cost-control mode.
         :param subagent_routing_override: Optional per-session sub-agent routing mode.
         :param harness_override: Optional per-session harness override.
+        :param provider_override: Optional host provider the session runs on.
         :returns: The newly created :class:`Conversation`.
         :raises NameAlreadyExistsError: If
             ``parent_conversation_id`` is not ``None`` and a

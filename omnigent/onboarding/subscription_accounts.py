@@ -15,17 +15,27 @@ import shlex
 import sys
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
+from urllib.parse import urlparse
 
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.onboarding.provider_config import (
     ANTHROPIC_FAMILY,
+    BEDROCK_KIND,
+    CLI_CONFIG_KIND,
+    DATABRICKS_KIND,
     OPENAI_FAMILY,
+    SESSION_PROVIDER_ENV,
     SUBSCRIPTION_CONFIG_DIR_ENV,
     SUBSCRIPTION_KIND,
     ProviderEntry,
     default_provider_for_harness,
+    harness_family,
     load_config,
+    load_providers,
+    provider_families,
+    session_provider,
     subscription_config_dir,
+    subscription_source_descriptor,
 )
 
 _logger = logging.getLogger(__name__)
@@ -155,6 +165,74 @@ def require_subscription_dir_active(entry: ProviderEntry, active_dir: Path) -> N
     )
 
 
+def require_session_account_dir(cli: str, launch_dir: Path) -> None:
+    """Fail when the session's *cli* account is not the login its CLI starts with.
+
+    The host points the runner at the account the session chose, but an agent
+    spec's ``env`` or the host's harness startup command can still move the
+    CLI to another login directory.
+
+    :param cli: The subscription CLI, e.g. ``"claude"``.
+    :param launch_dir: The login directory the CLI process would use, e.g.
+        ``Path("/srv/claude")``.
+    :raises OmnigentError: ``harness_not_configured`` when the session chose a
+        *cli* subscription account whose login directory differs.
+    """
+    entry = session_provider(load_config())
+    if entry is None or entry.kind != SUBSCRIPTION_KIND or entry.cli != cli:
+        return
+    expected = subscription_login_dir(entry)
+    if os.path.realpath(expected) == os.path.realpath(launch_dir):
+        return
+    raise OmnigentError(
+        f"This session runs on account {entry.name!r} ({expected}), but its {cli} "
+        f"terminal would start with the login in {launch_dir}: the agent's env or this "
+        f"host's {cli} startup command changes {SUBSCRIPTION_CONFIG_DIR_ENV[cli]} or HOME. "
+        "Remove that setting, or start the session on the account that uses that directory.",
+        code=ErrorCode.HARNESS_NOT_CONFIGURED,
+    )
+
+
+def session_runner_env(
+    config: dict[str, object], provider: str, harness: str | None
+) -> dict[str, str]:
+    """Return the runner env for a session that chose *provider*.
+
+    Validates the choice on this host and fails loudly rather than letting
+    the session run on another credential.
+
+    :param config: The parsed ``~/.omnigent/config.yaml`` mapping.
+    :param provider: The chosen ``providers:`` entry name, e.g. ``"claude-max2"``.
+    :param harness: The session's canonical harness, or ``None`` when unknown.
+    :returns: :data:`SESSION_PROVIDER_ENV` plus the login-dir env, the chosen
+        provider's directory winning for the family it serves.
+    :raises OmnigentError: When the provider is not configured here, cannot
+        serve the harness, or is a subscription that is not logged in.
+    """
+    entry = load_providers(config).get(provider)
+    if entry is None:
+        raise OmnigentError(
+            f"Provider {provider!r} is not configured on this host. Add it under "
+            "'providers:' in ~/.omnigent/config.yaml.",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    family = harness_family(harness) if harness else None
+    if family is not None and family not in provider_families(entry):
+        raise OmnigentError(
+            f"Provider {provider!r} cannot run the {harness!r} harness.",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    require_subscription_login(entry)
+    env = default_accounts_env(config)
+    for cli, cli_harness in _CLI_HARNESS.items():
+        if entry.cli == cli or harness_family(cli_harness) in provider_families(entry):
+            # The chosen provider owns this CLI's family: drop the default's dir.
+            env.pop(SUBSCRIPTION_CONFIG_DIR_ENV[cli], None)
+    env.update(subscription_home_env(entry))
+    env[SESSION_PROVIDER_ENV] = provider
+    return env
+
+
 def default_accounts_env(config: dict[str, object]) -> dict[str, str]:
     """Return the login-dir env for each CLI whose default provider pins one.
 
@@ -192,3 +270,52 @@ def apply_default_account_env(harness: str, env: MutableMapping[str, str] | None
         return
     if entry is not None:
         target.update(subscription_home_env(entry))
+
+
+def _provider_label(entry: ProviderEntry, family: str) -> str:
+    """Describe *entry* for a picker without resolving or revealing credentials."""
+    if entry.kind == SUBSCRIPTION_KIND:
+        return subscription_source_descriptor(entry)
+    if entry.kind == DATABRICKS_KIND:
+        return f"Databricks profile {entry.profile}" if entry.profile else "Databricks"
+    if entry.kind == CLI_CONFIG_KIND:
+        return entry.display_name or f"{entry.cli} provider {entry.model_provider}"
+    if entry.kind == BEDROCK_KIND:
+        return "AWS Bedrock"
+    raw = entry.families.get(family)
+    host = urlparse(raw.base_url).netloc if raw is not None else ""
+    return f"{entry.kind} · {host}" if host else entry.kind
+
+
+def provider_choices(config: dict[str, object], harness: str) -> list[dict[str, str | bool]]:
+    """List the configured providers a session of *harness* could run on.
+
+    :param config: The parsed ``~/.omnigent/config.yaml`` mapping.
+    :param harness: A canonical harness, e.g. ``"claude-native"``.
+    :returns: Rows of ``name`` / ``kind`` / ``label`` / ``default`` / ``ready``;
+        ``ready`` is ``False`` for a subscription account that is not logged in.
+        Empty for a harness with no provider family.
+    :raises OmnigentError: If the provider config is malformed.
+    """
+    family = harness_family(harness)
+    if family is None:
+        return []
+    default = default_provider_for_harness(config, harness)
+    rows: list[dict[str, str | bool]] = []
+    for entry in load_providers(config).values():
+        if family not in provider_families(entry):
+            continue
+        if entry.kind == BEDROCK_KIND and harness != "claude-native":
+            continue
+        rows.append(
+            {
+                "name": entry.name,
+                "kind": entry.kind,
+                "label": _provider_label(entry, family),
+                "default": default is not None and default.name == entry.name,
+                "ready": entry.cli not in _CLI_FAMILY
+                or entry.kind != SUBSCRIPTION_KIND
+                or subscription_logged_in(entry),
+            }
+        )
+    return rows

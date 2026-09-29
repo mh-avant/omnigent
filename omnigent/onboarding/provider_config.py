@@ -125,6 +125,10 @@ DATABRICKS_KIND: Literal["databricks"] = "databricks"
 CLI_CONFIG_KIND = "cli-config"
 BEDROCK_KIND = "bedrock"
 
+# Set by the host on a runner whose session chose a provider: that entry
+# becomes the default for every family it serves inside the runner.
+SESSION_PROVIDER_ENV = "OMNIGENT_SESSION_PROVIDER"
+
 # The env var each subscription CLI reads its login directory from. A
 # ``subscription`` entry's ``config_dir`` is exported under this name so
 # several accounts of the same CLI can coexist on one host.
@@ -1339,12 +1343,40 @@ def provider_families(entry: ProviderEntry) -> frozenset[str]:
     return frozenset()
 
 
+def session_provider_name() -> str | None:
+    """Return the provider this runner's session chose, if any."""
+    return os.environ.get(SESSION_PROVIDER_ENV) or None
+
+
+def session_provider(config: dict[str, object]) -> ProviderEntry | None:
+    """Return the entry this runner's session chose, if any.
+
+    :param config: The parsed config mapping (``providers:`` block).
+    :returns: The chosen :class:`ProviderEntry`, or ``None`` when the session
+        chose none.
+    :raises OmnigentError: If the chosen provider is not configured.
+    """
+    name = session_provider_name()
+    if name is None:
+        return None
+    entry = load_providers(config).get(name)
+    if entry is None:
+        raise OmnigentError(
+            f"This session runs on provider {name!r}, which is no longer configured "
+            "under 'providers:' in ~/.omnigent/config.yaml on this host.",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    return entry
+
+
 def get_default_provider(config: dict[str, object], family: str) -> ProviderEntry | None:
     """Return the ``default: true`` provider serving *family*, if any.
 
     Defaults are per-family: a Claude (``anthropic``) default and a Codex
     (``openai``) default coexist independently. At most one default may
-    serve a given family.
+    serve a given family. Inside a runner whose session chose a provider
+    (:data:`SESSION_PROVIDER_ENV`), that provider wins for the families it
+    serves.
 
     :param config: The parsed config mapping (``providers:`` block).
     :param family: The scope to resolve a default for, ``"anthropic"``,
@@ -1354,6 +1386,9 @@ def get_default_provider(config: dict[str, object], family: str) -> ProviderEntr
     :raises OmnigentError: If any provider is malformed, or more than one
         ``default: true`` provider serves *family*.
     """
+    session = session_provider(config)
+    if session is not None and family in provider_families(session):
+        return session
     candidates = [
         entry for entry in load_providers(config).values() if family in entry.default_families
     ]

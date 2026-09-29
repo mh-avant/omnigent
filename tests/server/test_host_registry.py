@@ -254,6 +254,24 @@ async def test_inventory_waiters_on_closed_owner_loop_are_ignored() -> None:
     closed_mcp.cancel()
 
 
+@pytest.mark.parametrize("reconnect", [False, True], ids=["deregister", "replace"])
+async def test_lost_host_fails_pending_provider_listings(reconnect: bool) -> None:
+    """A provider listing in flight fails at once instead of waiting out its timeout."""
+    registry = HostRegistry()
+    conn = registry.register("host_providers", FakeWebSocket(), _make_hello(), owner="bob")
+    pending = asyncio.get_running_loop().create_future()
+    conn.pending_providers["live"] = pending
+
+    if reconnect:
+        registry.register("host_providers", FakeWebSocket(), _make_hello(), owner="bob")
+    else:
+        assert registry.deregister(conn.host_id) is True
+
+    with pytest.raises(ConnectionError, match="disconnected"):
+        pending.result()
+    assert conn.pending_providers == {}
+
+
 def test_deregister_returns_false_for_unknown() -> None:
     """
     Verify that deregister reports whether it removed an entry.

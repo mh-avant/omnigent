@@ -45,6 +45,8 @@ from omnigent.host.frames import (
     HostModelOptionsResultFrame,
     HostPluginsFrame,
     HostPluginsResultFrame,
+    HostProvidersFrame,
+    HostProvidersResultFrame,
     HostRefreshHarnessesFrame,
     HostRefreshHarnessesResultFrame,
     HostRemoveWorktreeFrame,
@@ -266,6 +268,51 @@ def test_mcp_servers_frames_round_trip(
     frame: HostMcpServersFrame | HostMcpServersResultFrame,
 ) -> None:
     assert decode_host_frame(encode_host_frame(frame)) == frame
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        HostProvidersFrame(request_id="req_p", harness="claude-native"),
+        HostProvidersResultFrame(
+            request_id="req_p",
+            status="ok",
+            providers=[
+                {
+                    "name": "claude-max2",
+                    "kind": "subscription",
+                    "label": "claude CLI login (~/.claude-max2)",
+                    "default": False,
+                    "ready": True,
+                }
+            ],
+        ),
+        HostProvidersResultFrame(request_id="req_p", status="failed", error="boom"),
+        HostLaunchRunnerFrame(
+            request_id="r", binding_token="t", workspace="/w", provider="claude-max2"
+        ),
+    ],
+)
+def test_provider_frames_round_trip(
+    frame: HostProvidersFrame | HostProvidersResultFrame | HostLaunchRunnerFrame,
+) -> None:
+    assert decode_host_frame(encode_host_frame(frame)) == frame
+
+
+def test_providers_result_drops_unknown_fields() -> None:
+    row = {"name": "k", "kind": "key", "label": "key", "default": True, "ready": True}
+    frame = decode_host_frame(
+        json.dumps(
+            {
+                "kind": "host.providers_result",
+                "request_id": "r",
+                "status": "ok",
+                "providers": [{**row, "api_key": "secret"}],
+            }
+        )
+    )
+    assert isinstance(frame, HostProvidersResultFrame)
+    assert frame.providers == [row]
 
 
 def test_mcp_servers_result_keeps_only_allow_listed_fields() -> None:

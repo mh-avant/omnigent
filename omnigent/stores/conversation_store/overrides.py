@@ -18,6 +18,9 @@ _SESSION_OVERRIDE_KEYS = (
     "cost_control_mode_override",
     "subagent_routing_override",
     "harness_override",
+    # Name of the host provider (subscription account, gateway, ...) the
+    # session runs on; set at create and immutable.
+    "provider_override",
     # Stored as the string ``"on"`` when the owner shares workspace files
     # with view-level collaborators; absent (SQL NULL blob key) otherwise.
     "share_workspace_files",

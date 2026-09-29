@@ -1885,6 +1885,24 @@ def claude_global_config_path(
     return _claude_joined_path(base, config_dir or home_value, f".claude{suffix}.json")
 
 
+def claude_launch_config_dir(cwd: Path, env: Mapping[str, str]) -> Path:
+    """
+    Return the config dir, and so the login, Claude uses for a launch.
+
+    ``$CLAUDE_CONFIG_DIR``, else ``$HOME/.claude``, joined the way
+    :func:`claude_global_config_path` joins it; an empty value is Claude's
+    working directory.
+
+    :param cwd: Claude's working directory, e.g. ``Path("/home/user/repo")``.
+    :param env: Claude's launch environment, e.g. ``{"CLAUDE_CONFIG_DIR": "/srv/claude"}``.
+    :returns: The directory, e.g. ``Path("/srv/claude")``.
+    """
+    config_dir = env.get("CLAUDE_CONFIG_DIR")
+    if config_dir is None:
+        config_dir = os.path.join(env.get("HOME") or str(_account_home_dir()), ".claude")
+    return _claude_joined_path(cwd, config_dir, "")
+
+
 def _claude_joined_path(cwd: Path, directory: str, name: str) -> Path:
     """
     Return the file Claude opens for ``path.join(directory, name)`` from *cwd*.

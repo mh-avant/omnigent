@@ -144,6 +144,10 @@ class Conversation:
         Mutable via ``PATCH /v1/sessions/{id}`` at any time; read per
         spawn by the route-subagent relay, so a change takes effect on
         the next spawn.
+    :param provider_override: Name of the host ``providers:`` entry the
+        session runs on, e.g. ``"claude-max2"``. ``None`` uses the family
+        default. Set at session creation and immutable; the host resolves
+        it when launching the session's runner.
     :param harness_override: Per-session harness override for the
         bound agent's brain, e.g. ``"pi"`` or ``"openai-agents"``.
         ``None`` means use the harness declared in the agent spec
@@ -253,6 +257,7 @@ class Conversation:
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     harness_override: str | None = None
+    provider_override: str | None = None
     share_workspace_files: bool = False
     sub_agent_name: str | None = None
     task_summary: str | None = None

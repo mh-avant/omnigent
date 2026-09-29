@@ -52,6 +52,7 @@ from omnigent.errors import (
     ErrorCategory,
     ErrorImpact,
     ErrorPhase,
+    OmnigentError,
     category_for_code,
     phase_for_code,
 )
@@ -102,6 +103,8 @@ from omnigent.host.frames import (
     HostModelOptionsResultFrame,
     HostPluginsFrame,
     HostPluginsResultFrame,
+    HostProvidersFrame,
+    HostProvidersResultFrame,
     HostRefreshHarnessesFrame,
     HostRefreshHarnessesResultFrame,
     HostRemoveWorktreeFrame,
@@ -855,6 +858,25 @@ class HostConnectError(Exception):
     The message is the full, user-facing explanation including the
     suggested fix; it is printed verbatim by :func:`run_host_process`.
     """
+
+
+def _runner_account_env(frame: HostLaunchRunnerFrame) -> dict[str, str]:
+    """Return the provider env for a runner launched without a saved inference config.
+
+    :param frame: The launch request.
+    :returns: The session provider and login-dir env vars.
+    :raises OmnigentError: When the chosen provider cannot run here.
+    """
+    from omnigent.onboarding.provider_config import load_config
+    from omnigent.onboarding.subscription_accounts import (
+        default_accounts_env,
+        session_runner_env,
+    )
+
+    config = load_config()
+    if frame.provider is None:
+        return default_accounts_env(config)
+    return session_runner_env(config, frame.provider, frame.harness)
 
 
 def _build_runner_env(
@@ -1995,12 +2017,16 @@ class HostProcess:
                 )
             env["OMNIGENT_INFERENCE_CONFIG"] = str(inference_path)
         else:
-            from omnigent.onboarding.provider_config import load_config
-            from omnigent.onboarding.subscription_accounts import default_accounts_env
-
-            # Subscription accounts with their own login dir: the runner's CLIs
-            # and Claude/Codex file reads follow CLAUDE_CONFIG_DIR / CODEX_HOME.
-            env.update(await asyncio.to_thread(lambda: default_accounts_env(load_config())))
+            # The session's provider and subscription login dirs: the runner's
+            # CLIs and Claude/Codex file reads follow CLAUDE_CONFIG_DIR / CODEX_HOME.
+            try:
+                env.update(await asyncio.to_thread(_runner_account_env, frame))
+            except OmnigentError as exc:
+                # Same category as a missing harness: the session cannot run here
+                # until the user configures or signs in to the chosen provider.
+                return self._launch_failed(
+                    frame, str(exc), error_code=HARNESS_NOT_CONFIGURED_ERROR_CODE
+                )
         # The runner serves one primary session (plus any co-located subagents);
         # pass it so runner-level log records can be attributed to that session.
         if frame.session_id:
@@ -3448,6 +3474,21 @@ class HostProcess:
                 request_id=frame.request_id, status="failed", error="MCP tools lookup failed"
             )
         return HostMcpToolsResultFrame(request_id=frame.request_id, status="ok", **result)
+
+    def _handle_providers(self, frame: HostProvidersFrame) -> HostProvidersResultFrame:
+        """List the providers a harness can run on, in a worker thread."""
+        from omnigent.onboarding.provider_config import load_config
+        from omnigent.onboarding.subscription_accounts import provider_choices
+
+        try:
+            providers = provider_choices(load_config(), frame.harness)
+        except OmnigentError as exc:
+            return HostProvidersResultFrame(
+                request_id=frame.request_id, status="failed", error=str(exc)
+            )
+        return HostProvidersResultFrame(
+            request_id=frame.request_id, status="ok", providers=providers
+        )
 
     def _fetch_skill_bundle(self, frame: HostSkillsFrame) -> httpx.Response:
         """Read the bound session bundle using this host's existing credentials."""
@@ -5198,6 +5239,9 @@ class HostProcess:
         elif isinstance(frame, HostMcpServersFrame):
             mcp_result = await asyncio.to_thread(self._handle_mcp_servers, frame)
             await self._send_text(ws, encode_host_frame(mcp_result))
+        elif isinstance(frame, HostProvidersFrame):
+            providers_result = await asyncio.to_thread(self._handle_providers, frame)
+            await self._send_text(ws, encode_host_frame(providers_result))
         elif isinstance(frame, HostModelOptionsFrame):
             # Every dispatched frame already runs on its own task (see
             # _start_frame_task), so a cold harness probe here cannot stall

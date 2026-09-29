@@ -1643,6 +1643,13 @@ class _SessionCreateRequestBase(BaseModel):
         the spec's declared harness. Create-time only — there is no
         PATCH path, since the harness process spawns on the first
         turn.
+    :param provider_override: Optional name of a ``providers:`` entry on the
+        session's host, e.g. ``"claude-max2"`` for a second Claude
+        subscription account. The host validates it against its providers
+        for the session's harness family when launching the runner, and a
+        missing login fails the launch. ``None`` uses the family default.
+        Create-time only; host-bound sessions only. Sub-agents inherit it
+        when they run in the same family.
     :param smart_routing_message: The user's first-message text, used to
         route the harness at create time. Only read on the top-level
         Smart Routing path (``harness_override: "auto"`` on a native
@@ -1682,6 +1689,7 @@ class _SessionCreateRequestBase(BaseModel):
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     harness_override: str | None = None
+    provider_override: str | None = None
     smart_routing_message: str | None = None
 
     @model_validator(mode="after")
@@ -2248,6 +2256,8 @@ class SessionResponse(BaseModel):
         a row created before this became explicit inherits nothing.
         Stamped ``"on"`` at create for Smart Routing sessions; also set
         via ``PATCH /v1/sessions/{id}``.
+    :param provider_override: The host provider the session was created on,
+        e.g. ``"claude-max2"``; ``None`` for the family default.
     :param share_workspace_files: Whether the owner opted into letting
         view-level collaborators browse the workspace (Files/Changes/GitHub
         surfaces). ``False`` by default — read grants share the conversation
@@ -2409,6 +2419,7 @@ class SessionResponse(BaseModel):
     llm_model: str | None = None
     harness: str | None = None
     model_override: str | None = None
+    provider_override: str | None = None
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     share_workspace_files: bool = False

@@ -46,6 +46,7 @@ from omnigent.harnesses.claude_native.bridge import (
     _occupying_surface,
     augment_claude_args,
     claude_global_config_path,
+    claude_launch_config_dir,
     count_hook_events,
     display_cost_approval_popup,
     ensure_claude_workspace_trusted,
@@ -8800,6 +8801,24 @@ def test_claude_global_config_path_uses_launch_env_and_cwd(
     assert (
         claude_global_config_path(workspace, tilde_env) == workspace / "~" / "cfg" / ".claude.json"
     )
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({"HOME": "/home/u"}, "/home/u/.claude"),
+        ({"HOME": "/home/u", "CLAUDE_CONFIG_DIR": "/srv/claude/"}, "/srv/claude"),
+        # Relative and empty selectors resolve against Claude's working directory.
+        ({"CLAUDE_CONFIG_DIR": "x/../cfg"}, "/work/cfg"),
+        ({"CLAUDE_CONFIG_DIR": ""}, "/work"),
+        ({"CLAUDE_CONFIG_DIR": "~/cfg"}, "/work/~/cfg"),
+    ],
+)
+def test_claude_launch_config_dir_follows_claude_resolution(
+    env: dict[str, str], expected: str
+) -> None:
+    """The login directory Claude starts with, for its launch env and working directory."""
+    assert claude_launch_config_dir(Path("/work"), env) == Path(expected)
 
 
 def test_claude_global_config_path_removes_dot_dot_like_path_join(

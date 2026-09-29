@@ -10,18 +10,23 @@ from typing import Any
 import pytest
 import yaml
 
-from omnigent.errors import OmnigentError
+from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.onboarding import harness_install, harness_readiness
 from omnigent.onboarding.provider_config import (
+    SESSION_PROVIDER_ENV,
     describe_active_credential,
+    get_default_provider,
     load_providers,
     subscription_config_dir,
 )
 from omnigent.onboarding.subscription_accounts import (
     apply_default_account_env,
     default_accounts_env,
+    provider_choices,
+    require_session_account_dir,
     require_subscription_dir_active,
     require_subscription_login,
+    session_runner_env,
     subscription_home_env,
     subscription_logged_in,
     subscription_login_command,
@@ -238,3 +243,155 @@ def test_codex_account_without_login_does_not_fall_back(
     launch = app_server._resolve_subscription_launch(load_providers(config)["b"], None, config)
 
     assert launch.login_required
+
+
+def _session_config(tmp_path: Path) -> dict[str, object]:
+    return _providers(
+        max1={
+            "kind": "subscription",
+            "cli": "claude",
+            "config_dir": str(tmp_path / "m1"),
+            "default": True,
+        },
+        max2={"kind": "subscription", "cli": "claude", "config_dir": str(tmp_path / "m2")},
+        codex_b={
+            "kind": "subscription",
+            "cli": "codex",
+            "config_dir": str(tmp_path / "cb"),
+            "default": True,
+        },
+        dbx={"kind": "databricks", "profile": "alt"},
+        openrouter={
+            "kind": "gateway",
+            "anthropic": {"base_url": "https://openrouter.ai/api", "api_key": "sk-literal"},
+        },
+    )
+
+
+def test_session_runner_env_swaps_in_the_chosen_account(tmp_path: Path) -> None:
+    _write_claude_login(tmp_path / "m2")
+
+    env = session_runner_env(_session_config(tmp_path), "max2", "claude-native")
+
+    assert env == {
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "m2"),
+        "CODEX_HOME": str(tmp_path / "cb"),
+        SESSION_PROVIDER_ENV: "max2",
+    }
+
+
+def test_session_runner_env_drops_account_dirs_a_gateway_replaces(tmp_path: Path) -> None:
+    env = session_runner_env(_session_config(tmp_path), "dbx", "claude-sdk")
+
+    # Databricks serves both families, so neither default login dir applies.
+    assert env == {SESSION_PROVIDER_ENV: "dbx"}
+
+
+@pytest.mark.parametrize(
+    "provider,harness,message",
+    [
+        ("nope", "claude-native", "'nope' is not configured on this host"),
+        ("codex_b", "claude-native", "cannot run the 'claude-native' harness"),
+        ("max2", "claude-sdk", "'max2' is not logged in"),
+    ],
+)
+def test_session_runner_env_fails_loudly(
+    tmp_path: Path, provider: str, harness: str, message: str
+) -> None:
+    with pytest.raises(OmnigentError, match=message):
+        session_runner_env(_session_config(tmp_path), provider, harness)
+
+
+def test_session_provider_becomes_the_default_for_its_family(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _session_config(tmp_path)
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "max2")
+
+    assert get_default_provider(config, "anthropic").name == "max2"  # type: ignore[union-attr]
+    # Other families keep their own defaults.
+    assert get_default_provider(config, "openai").name == "codex_b"  # type: ignore[union-attr]
+
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "gone")
+    with pytest.raises(OmnigentError, match="'gone', which is no longer configured"):
+        get_default_provider(config, "anthropic")
+
+
+def test_session_account_must_be_the_login_the_cli_starts_with(
+    config_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_config(config_home, _session_config(tmp_path))
+    (tmp_path / "m2").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "m2")
+
+    # Without a session choice the launch's own login stands.
+    require_session_account_dir("claude", tmp_path / "elsewhere")
+
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "max2")
+    require_session_account_dir("claude", tmp_path / "m2")
+    require_session_account_dir("claude", tmp_path / "link")
+    with pytest.raises(OmnigentError, match="runs on account 'max2'") as failure:
+        require_session_account_dir("claude", tmp_path / "elsewhere")
+    # The native-terminal error payload shows this code's message to the user.
+    assert failure.value.code == ErrorCode.HARNESS_NOT_CONFIGURED
+
+    # A gateway account has no login directory for the launch to diverge from.
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "dbx")
+    require_session_account_dir("claude", tmp_path / "elsewhere")
+
+
+def test_provider_choices_list_family_providers_without_secrets(tmp_path: Path) -> None:
+    _write_claude_login(tmp_path / "m1")
+
+    rows = provider_choices(_session_config(tmp_path), "claude-native")
+
+    assert rows == [
+        {
+            "name": "max1",
+            "kind": "subscription",
+            "label": f"claude CLI login ({tmp_path / 'm1'})",
+            "default": True,
+            "ready": True,
+        },
+        {
+            "name": "max2",
+            "kind": "subscription",
+            "label": f"claude CLI login ({tmp_path / 'm2'})",
+            "default": False,
+            "ready": False,
+        },
+        {
+            "name": "dbx",
+            "kind": "databricks",
+            "label": "Databricks profile alt",
+            "default": False,
+            "ready": True,
+        },
+        {
+            "name": "openrouter",
+            "kind": "gateway",
+            "label": "gateway · openrouter.ai",
+            "default": False,
+            "ready": True,
+        },
+    ]
+    assert "sk-literal" not in json.dumps(rows)
+    assert provider_choices(_session_config(tmp_path), "cursor") == []
+
+
+def test_host_launch_env_uses_defaults_or_the_session_choice(
+    config_home: Path, tmp_path: Path
+) -> None:
+    from omnigent.host.connect import _runner_account_env
+    from omnigent.host.frames import HostLaunchRunnerFrame
+
+    _write_config(config_home, _session_config(tmp_path))
+    frame = HostLaunchRunnerFrame(request_id="r", binding_token="t", workspace="/w")
+
+    assert _runner_account_env(frame) == {
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "m1"),
+        "CODEX_HOME": str(tmp_path / "cb"),
+    }
+    frame.provider, frame.harness = "max2", "claude-native"
+    with pytest.raises(OmnigentError, match="not logged in"):
+        _runner_account_env(frame)

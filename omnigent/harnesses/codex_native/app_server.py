@@ -3979,9 +3979,11 @@ def _resolve_subscription_launch(
             profile=None,
             summary=f"Codex CLI login (subscription provider {entry.name!r}; Codex is logged in)",
         )
-    # An account with its own login dir never falls through to another
-    # credential: the user must sign that account in.
-    explicit_account = entry.config_dir is not None
+    from omnigent.onboarding.provider_config import session_provider_name
+
+    # A named account (own login dir, or chosen for this session) never falls
+    # through to another credential: the user must sign that account in.
+    explicit_account = entry.config_dir is not None or entry.name == session_provider_name()
     fallback = (
         None
         if explicit_account

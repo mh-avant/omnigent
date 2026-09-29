@@ -807,6 +807,7 @@ def register_core_routes(
                 ),
                 # The session had no runner bound, so nothing is superseded.
                 superseded_runner_ids=(),
+                provider=target.conv.provider_override,
             )
         )
         launch_timeout_s = resolve_launch_timeout_s()
