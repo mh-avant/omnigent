@@ -244,7 +244,8 @@ executor:
 ```
 
 To route through OpenRouter / a gateway, declare a key/gateway provider in
-`~/.omnigent/config.yaml` and reference it (`auth: {type: provider, name: …}`),
+`~/.omnigent/config.yaml` ([Model providers](providers.md)) and reference it
+(`auth: {type: provider, name: …}`),
 or set `auth.base_url` to the OpenAI-compatible endpoint alongside the key.
 For Databricks, use `auth: {type: databricks, profile: …}`.
 
