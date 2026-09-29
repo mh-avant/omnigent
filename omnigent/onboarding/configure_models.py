@@ -726,6 +726,9 @@ def _subscription_auth_summary(entry: ProviderEntry) -> str:
     from omnigent.onboarding.ambient import codex_cli_effective_auth_mode
 
     base = f"via {entry.cli} CLI"
+    if entry.config_dir:
+        # A separate account: the ambient auth-mode probe reads the default login.
+        return f"{base} ({entry.config_dir})"
     if entry.cli != "codex":
         return base
     mode = codex_cli_effective_auth_mode()
@@ -910,15 +913,22 @@ def default_base_url_for_family(family: str) -> str:
     return _FAMILY_DEFAULT_BASE_URL[family]
 
 
-def build_subscription_provider_entry(cli: str) -> dict[str, object]:
+def build_subscription_provider_entry(
+    cli: str, config_dir: str | None = None
+) -> dict[str, object]:
     """Build a ``kind: subscription`` provider entry body.
 
     :param cli: The CLI whose login carries auth, ``"claude"`` or
         ``"codex"``.
+    :param config_dir: The account's own login directory, e.g.
+        ``"~/.claude-max2"``; ``None`` uses the CLI's default login.
     :returns: A provider entry body, e.g.
         ``{"kind": "subscription", "cli": "claude"}``.
     """
-    return {"kind": SUBSCRIPTION_KIND, "cli": cli}
+    entry: dict[str, object] = {"kind": SUBSCRIPTION_KIND, "cli": cli}
+    if config_dir:
+        entry["config_dir"] = config_dir
+    return entry
 
 
 def build_cli_config_provider_entry(

@@ -1687,6 +1687,65 @@ def test_codex_subscription_default_pins_builtin_openai(config_home: Path) -> No
     assert "HARNESS_CODEX_GATEWAY" not in env
 
 
+def test_subscription_config_dir_reaches_claude_sdk_spawn_env(
+    config_home: Path, tmp_path: Path
+) -> None:
+    """A Claude account with its own login dir exports it as CLAUDE_CONFIG_DIR."""
+    _write_config(
+        config_home,
+        {
+            "providers": {
+                "max2": {
+                    "kind": "subscription",
+                    "cli": "claude",
+                    "config_dir": str(tmp_path / "claude-max2"),
+                    "default": True,
+                }
+            }
+        },
+    )
+
+    env = _build_claude_sdk_spawn_env(_make_spec(harness="claude-sdk"), workdir=None)
+
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "claude-max2")
+
+
+def test_spec_pinned_codex_account_sets_source_codex_home(
+    config_home: Path, tmp_path: Path
+) -> None:
+    """A spec-pinned Codex account points the executor at its CODEX_HOME."""
+    _write_config(
+        config_home,
+        {
+            "providers": {
+                "codex-b": {
+                    "kind": "subscription",
+                    "cli": "codex",
+                    "config_dir": str(tmp_path / "codex-b"),
+                }
+            }
+        },
+    )
+    spec = _make_spec(harness="codex", auth=ProviderAuth(name="codex-b"))
+
+    env = _build_codex_spawn_env(spec, workdir=None)
+
+    assert env["CODEX_HOME"] == str(tmp_path / "codex-b")
+    assert env["HARNESS_CODEX_MODEL_PROVIDER"] == "openai"
+
+
+def test_default_login_subscription_leaves_login_dir_env_unset(config_home: Path) -> None:
+    """A subscription without config_dir keeps the process's own login dir."""
+    _write_config(
+        config_home,
+        {"providers": {"claude": {"kind": "subscription", "cli": "claude", "default": True}}},
+    )
+
+    env = _build_claude_sdk_spawn_env(_make_spec(harness="claude-sdk"), workdir=None)
+
+    assert "CLAUDE_CONFIG_DIR" not in env
+
+
 def test_openai_agents_cli_config_default_fails_loud(config_home: Path) -> None:
     """A cli-config default cannot drive the openai-agents-sdk harness.
 

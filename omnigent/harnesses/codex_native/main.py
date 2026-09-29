@@ -458,6 +458,9 @@ def run_codex_native(
     if not resolved_command:
         raise click.ClickException("Codex command must not be empty.")
     _preflight_local_tools()
+    from omnigent.onboarding.subscription_accounts import apply_default_account_env
+
+    apply_default_account_env("codex-native")
     if server is None:
         raise click.ClickException(
             "Codex requires a resolved Omnigent server URL. The CLI should call "

@@ -1994,6 +1994,13 @@ class HostProcess:
                     frame, f"Cannot install session inference config: {exc}"
                 )
             env["OMNIGENT_INFERENCE_CONFIG"] = str(inference_path)
+        else:
+            from omnigent.onboarding.provider_config import load_config
+            from omnigent.onboarding.subscription_accounts import default_accounts_env
+
+            # Subscription accounts with their own login dir: the runner's CLIs
+            # and Claude/Codex file reads follow CLAUDE_CONFIG_DIR / CODEX_HOME.
+            env.update(await asyncio.to_thread(lambda: default_accounts_env(load_config())))
         # The runner serves one primary session (plus any co-located subagents);
         # pass it so runner-level log records can be attributed to that session.
         if frame.session_id:

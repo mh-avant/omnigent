@@ -3932,6 +3932,15 @@ def _ambient_builtin_codex_provider(config_profile: str | None) -> str | None:
     return effective_self_sufficient_builtin_provider(config)
 
 
+def _subscription_login_usable(entry: ProviderEntry) -> bool:
+    """Whether *entry*'s account is logged in, reading its own ``config_dir`` if set."""
+    if entry.config_dir is None:
+        return _codex_login_usable()
+    from omnigent.onboarding.subscription_accounts import subscription_logged_in
+
+    return subscription_logged_in(entry)
+
+
 def _resolve_subscription_launch(
     entry: ProviderEntry, model: str | None, explicit: dict[str, object]
 ) -> NativeCodexLaunch:
@@ -3958,7 +3967,7 @@ def _resolve_subscription_launch(
     # Gateway), which would silently hijack a Subscription selection. A
     # no-op when the user's config sets no custom default.
     subscription_overrides = ['model_provider="openai"']
-    if _codex_login_usable():
+    if _subscription_login_usable(entry):
         log_info_once(
             _logger,
             "native-codex routing: Codex CLI login (subscription provider %r; Codex is logged in)",
@@ -3970,7 +3979,14 @@ def _resolve_subscription_launch(
             profile=None,
             summary=f"Codex CLI login (subscription provider {entry.name!r}; Codex is logged in)",
         )
-    fallback = _first_routable_codex_provider(explicit, exclude=entry.name, model=model)
+    # An account with its own login dir never falls through to another
+    # credential: the user must sign that account in.
+    explicit_account = entry.config_dir is not None
+    fallback = (
+        None
+        if explicit_account
+        else _first_routable_codex_provider(explicit, exclude=entry.name, model=model)
+    )
     if fallback is not None:
         return fallback
     log_info_once(
@@ -4104,6 +4120,11 @@ def resolve_native_codex_launch(
         )
         if spec_entry is not None:
             if spec_entry.kind == SUBSCRIPTION_KIND:
+                from omnigent.onboarding.subscription_accounts import (
+                    require_subscription_dir_active,
+                )
+
+                require_subscription_dir_active(spec_entry, _codex_home_config_source_from_env())
                 # A spec-named subscription defers to Codex's own login,
                 # logged in or not. The machine-default path would substitute
                 # the first OTHER routable provider on a logged-out Codex

@@ -126,11 +126,11 @@ def _harnesses_installed(monkeypatch):
     )
     monkeypatch.setattr(
         "omnigent.onboarding.harness_install.harness_login",
-        lambda family: True,
+        lambda family, **_: True,
     )
     monkeypatch.setattr(
         "omnigent.onboarding.harness_install.harness_logout",
-        lambda family: True,
+        lambda family, **_: True,
     )
     monkeypatch.setattr(
         "omnigent.onboarding.harness_install.harness_cli_logged_in",
@@ -821,7 +821,7 @@ def test_add_subscription_invokes_harness_login(isolated_config, monkeypatch) ->
     calls: list[str] = []
     monkeypatch.setattr(
         "omnigent.onboarding.harness_install.harness_login",
-        lambda family: calls.append(family) or True,
+        lambda family, **_: calls.append(family) or True,
     )
     stdin = "\n".join(["1", "1", "2", "q", "q"]) + "\n"  # Claude → +Add → subscription
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
@@ -839,7 +839,9 @@ def test_add_subscription_aborts_when_login_fails(isolated_config, monkeypatch) 
     must not persist a subscription entry — otherwise routing would later strand
     the user at the harness's own login screen, exactly what we're fixing.
     """
-    monkeypatch.setattr("omnigent.onboarding.harness_install.harness_login", lambda family: False)
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_install.harness_login", lambda family, **_: False
+    )
     stdin = "\n".join(["1", "1", "2", "q", "q"]) + "\n"  # Claude → +Add → subscription
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
@@ -863,7 +865,7 @@ def test_remove_subscription_signs_out_and_removes(isolated_config, monkeypatch)
     calls: list[str] = []
     monkeypatch.setattr(
         "omnigent.onboarding.harness_install.harness_logout",
-        lambda family: calls.append(family) or True,
+        lambda family, **_: calls.append(family) or True,
     )
     # L1 1=Claude → L2 1=select the subscription → L3 2=Remove → confirm 1=Yes
     # (sign out + remove) → L2 q → L1 q.
@@ -1152,6 +1154,39 @@ def test_add_subscription_keep_current_aborts(isolated_config) -> None:
     assert "claude-subscription" not in providers
     assert providers["claude"]["kind"] == "subscription"
     assert get_default_provider(cfg, "anthropic").name == "claude"
+
+
+def test_add_another_subscription_account_logs_into_its_own_dir(
+    isolated_config, monkeypatch, tmp_path
+) -> None:
+    """A second Claude account signs in under its own CLAUDE_CONFIG_DIR and keeps the first."""
+    _seed_config(
+        isolated_config,
+        {"claude": {"kind": "subscription", "default": True, "cli": "claude"}},
+    )
+    logins: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_install.harness_login",
+        lambda family, env=None: logins.append(dict(env or {})) or True,
+    )
+    account_dir = tmp_path / "claude-max2"
+    # L1 1=Claude → L2 2=+Add → 2=Claude subscription → 3=Add another account →
+    # name (default) → login dir → L2 q → L1 q.
+    stdin = "\n".join(["1", "2", "2", "3", "", str(account_dir), "q", "q"]) + "\n"
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
+    assert result.exit_code == 0, result.output
+
+    assert logins == [{"CLAUDE_CONFIG_DIR": str(account_dir)}]
+    assert account_dir.is_dir()
+    providers = _config_yaml(isolated_config)["providers"]
+    assert providers["claude"]["kind"] == "subscription"
+    assert providers["claude-account-2"] == {
+        "kind": "subscription",
+        "cli": "claude",
+        "config_dir": str(account_dir),
+    }
+    # The first account keeps the Claude default.
+    assert get_default_provider(_config_yaml(isolated_config), "anthropic").name == "claude"
 
 
 def test_add_second_key_different_source_keeps_both(isolated_config) -> None:

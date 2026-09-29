@@ -689,6 +689,12 @@ def configure_agent_harness_with_provider(
             # the ChatGPT login — a no-op when the user's config sets no
             # custom default.
             env["HARNESS_CODEX_MODEL_PROVIDER"] = "openai"
+        # An account with its own login directory: the harness process (and
+        # the CLI it drives) reads CLAUDE_CONFIG_DIR / the source CODEX_HOME.
+        if (harness_type, entry.cli) in (("claude-sdk", "claude"), ("codex", "codex")):
+            from omnigent.onboarding.subscription_accounts import subscription_home_env
+
+            env.update(subscription_home_env(entry))
         return
 
     if entry.kind == CLI_CONFIG_KIND:

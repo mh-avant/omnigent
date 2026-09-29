@@ -48,6 +48,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Literal
 
 from omnigent.cli_invocation import cli_invocation
@@ -123,6 +124,14 @@ LOCAL_KIND = "local"
 DATABRICKS_KIND: Literal["databricks"] = "databricks"
 CLI_CONFIG_KIND = "cli-config"
 BEDROCK_KIND = "bedrock"
+
+# The env var each subscription CLI reads its login directory from. A
+# ``subscription`` entry's ``config_dir`` is exported under this name so
+# several accounts of the same CLI can coexist on one host.
+SUBSCRIPTION_CONFIG_DIR_ENV: dict[str, str] = {
+    "claude": "CLAUDE_CONFIG_DIR",
+    "codex": "CODEX_HOME",
+}
 
 # The CLIs whose own config file this build knows how to drive for a
 # ``cli-config`` provider. A ``cli-config`` entry naming any other CLI is a
@@ -413,6 +422,10 @@ class ProviderEntry:
         human display name (the table's ``name`` field, snapshotted at
         adoption), e.g. ``"Databricks Unity Gateway"``. ``None`` otherwise and
         when the table named none.
+    :param config_dir: For a ``claude`` / ``codex`` ``subscription`` only: the
+        CLI config directory holding this account's login, e.g.
+        ``"~/.claude-max2"``. Exported as ``CLAUDE_CONFIG_DIR`` / the source
+        ``CODEX_HOME``. Stored unexpanded; ``None`` uses the process default.
     :param default_families: The set of model families this provider is
         the **default** for. Sourced from the entry's ``default:`` flag:
         ``true`` → every family it serves (:func:`provider_families`); a
@@ -436,6 +449,7 @@ class ProviderEntry:
     default_families: frozenset[str] = frozenset()
     # Databricks Gemini routing is opt-in and has a separate default scope.
     native_gemini: bool = False
+    config_dir: str | None = None
 
     @property
     def default(self) -> bool:
@@ -959,6 +973,17 @@ def _parse_provider(name: str, raw: dict[str, object]) -> ProviderEntry:
             if cli_raw == "claude"
             else ({OPENAI_FAMILY} if cli_raw == "codex" else set())
         )
+        config_dir_raw = raw.get("config_dir")
+        if config_dir_raw is not None and (
+            cli_raw not in SUBSCRIPTION_CONFIG_DIR_ENV
+            or not isinstance(config_dir_raw, str)
+            or not config_dir_raw.strip()
+        ):
+            raise OmnigentError(
+                f"provider {name!r}: 'config_dir' must be a non-empty path and is only "
+                f"supported for the {sorted(SUBSCRIPTION_CONFIG_DIR_ENV)} subscription CLIs.",
+                code=ErrorCode.INVALID_INPUT,
+            )
         # claude/codex subscriptions are locked to their own CLIs and cannot
         # drive pi. A pi subscription explicitly opts into Pi's own native auth
         # and may default the pi surface (pi_capable=True, served={}).
@@ -969,6 +994,7 @@ def _parse_provider(name: str, raw: dict[str, object]) -> ProviderEntry:
             default_families=_parse_default_families(
                 name, default_raw, served, pi_capable=(cli_raw == "pi")
             ),
+            config_dir=config_dir_raw.strip() if isinstance(config_dir_raw, str) else None,
         )
 
     if kind == CLI_CONFIG_KIND:
@@ -1595,7 +1621,7 @@ def describe_active_credential(
             kind=provider.kind,
             family=None,
             model=model_override,
-            source=f"{provider.cli} CLI login",
+            source=subscription_source_descriptor(provider),
             base_url=None,
         )
 
@@ -1639,6 +1665,31 @@ def describe_active_credential(
         # base_url may contain a raw $VAR; expand it for display only.
         base_url=_expand(f"providers.{provider.name}.{family_name}.base_url", raw_family.base_url),
     )
+
+
+def subscription_config_dir(entry: ProviderEntry) -> Path | None:
+    """Return the expanded login directory of a subscription *entry*, if any.
+
+    :param entry: Any provider entry.
+    :returns: The absolute ``config_dir`` with ``~`` and ``$VAR`` expanded, or
+        ``None`` when the entry carries none.
+    :raises OmnigentError: If ``config_dir`` references an unset variable.
+    """
+    if entry.kind != SUBSCRIPTION_KIND or entry.config_dir is None:
+        return None
+    expanded = _expand(f"providers.{entry.name}.config_dir", entry.config_dir)
+    return Path(expanded).expanduser().absolute()
+
+
+def subscription_source_descriptor(entry: ProviderEntry) -> str:
+    """Describe where a subscription's login lives, for readouts and labels.
+
+    :param entry: A ``subscription`` provider entry.
+    :returns: e.g. ``"claude CLI login"`` or ``"claude CLI login (~/.claude-max2)"``.
+    """
+    if entry.config_dir:
+        return f"{entry.cli} CLI login ({entry.config_dir})"
+    return f"{entry.cli} CLI login"
 
 
 def set_default_provider(

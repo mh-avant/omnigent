@@ -43,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
 
@@ -809,7 +810,7 @@ READINESS_CLI_PROBE_TIMEOUT_S = 10.0
 # after a short TTL — a cached "not logged in" would blind the setup
 # wizard's confirmation right after a successful login.
 _VERSION_PROBE_CACHE: dict[tuple[str, int, int], str] = {}
-_LOGIN_PROBE_CACHE: dict[tuple[str, str], float] = {}
+_LOGIN_PROBE_CACHE: dict[tuple[str, ...], float] = {}
 _PROBE_CACHE_LOCK = threading.Lock()
 _LOGIN_PROBE_CACHE_TTL_S = 120.0
 _PROBE_CACHE_MAX_ENTRIES = 64
@@ -1170,7 +1171,22 @@ def install_harness_cli(key: str) -> bool:
     return try_install_harness_cli(key).installed
 
 
-def harness_cli_logged_in(key: str, timeout: float = _DEFAULT_CLI_PROBE_TIMEOUT_S) -> bool:
+def _subprocess_env(env: Mapping[str, str] | None) -> dict[str, str] | None:
+    """Overlay *env* on this process's environment, or ``None`` to inherit it."""
+    return {**os.environ, **env} if env else None
+
+
+def _logged_in_as(key: str, env: Mapping[str, str] | None) -> bool:
+    """Probe the login selected by *env*, or the process default when empty."""
+    return harness_cli_logged_in(key, env=env) if env else harness_cli_logged_in(key)
+
+
+def harness_cli_logged_in(
+    key: str,
+    timeout: float = _DEFAULT_CLI_PROBE_TIMEOUT_S,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> bool:
     """Return whether the harness CLI itself reports a usable login.
 
     Asks the CLI's own status command (``claude auth status`` /
@@ -1197,6 +1213,8 @@ def harness_cli_logged_in(key: str, timeout: float = _DEFAULT_CLI_PROBE_TIMEOUT_
         ``"openai"`` (Codex), or ``"gemini"`` (Antigravity, via ``agy models``).
     :param timeout: Seconds to wait for the status subprocess, e.g. ``10.0`` on
         the readiness path where a hung CLI must not stall the refresh.
+    :param env: Extra environment for the probe, e.g.
+        ``{"CLAUDE_CONFIG_DIR": "/home/u/.claude-max2"}`` to check one account.
     :returns: ``True`` when the CLI reports a usable login; ``False`` when the
         key has no status command, the CLI binary is missing, the status
         process failed to spawn, or the CLI reports no login.
@@ -1211,7 +1229,7 @@ def harness_cli_logged_in(key: str, timeout: float = _DEFAULT_CLI_PROBE_TIMEOUT_
     # are sticky, and the readiness loop re-probing a logged-in CLI every
     # refresh is the ambient storm. Negatives always re-probe so a login
     # made a moment ago is seen immediately.
-    cache_key = (key, binary)
+    cache_key = (key, binary, *(f"{k}={v}" for k, v in sorted((env or {}).items())))
     with _PROBE_CACHE_LOCK:
         if time.monotonic() < _LOGIN_PROBE_CACHE.get(cache_key, 0.0):
             return True
@@ -1225,6 +1243,7 @@ def harness_cli_logged_in(key: str, timeout: float = _DEFAULT_CLI_PROBE_TIMEOUT_
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            env=_subprocess_env(env),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -1251,7 +1270,7 @@ def harness_cli_logged_in(key: str, timeout: float = _DEFAULT_CLI_PROBE_TIMEOUT_
     return logged_in
 
 
-def harness_login(key: str) -> bool:
+def harness_login(key: str, *, env: Mapping[str, str] | None = None) -> bool:
     """Run the harness CLI's interactive subscription login; return logged-in state.
 
     Lets ``configure harnesses`` be the single place to sign in: when the user
@@ -1265,6 +1284,8 @@ def harness_login(key: str) -> bool:
 
     :param key: A harness family, ``"anthropic"`` (Claude), ``"openai"``
         (Codex), or ``"gemini"`` (Antigravity).
+    :param env: Extra environment for the login, e.g. ``{"CODEX_HOME": ...}``
+        to sign a second account into its own directory.
     :returns: ``True`` when the harness CLI is logged in after the attempt
         (including the already-logged-in short-circuit); ``False`` when the key
         has no login command, the CLI binary is missing, the login process
@@ -1277,7 +1298,7 @@ def harness_login(key: str) -> bool:
     if binary is None:
         return False
     argv_binary = binary if key == GEMINI_FAMILY else spec.binary
-    if harness_cli_logged_in(key):
+    if _logged_in_as(key, env):
         return True
     try:
         # Open /dev/tty explicitly so the child process sees a real TTY even
@@ -1296,19 +1317,25 @@ def harness_login(key: str) -> bool:
         try:
             if tty_fd is not None:
                 subprocess.run(
-                    argv, check=False, timeout=600, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd
+                    argv,
+                    check=False,
+                    timeout=600,
+                    stdin=tty_fd,
+                    stdout=tty_fd,
+                    stderr=tty_fd,
+                    env=_subprocess_env(env),
                 )
             else:
-                subprocess.run(argv, check=False, timeout=600)
+                subprocess.run(argv, check=False, timeout=600, env=_subprocess_env(env))
         finally:
             if tty_fd is not None:
                 os.close(tty_fd)
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return harness_cli_logged_in(key)
+    return _logged_in_as(key, env)
 
 
-def harness_logout(key: str) -> bool:
+def harness_logout(key: str, *, env: Mapping[str, str] | None = None) -> bool:
     """Run the harness CLI's logout; return whether it is now logged out.
 
     Drives the harness's own logout command (``claude auth logout`` /
@@ -1319,6 +1346,8 @@ def harness_logout(key: str) -> bool:
 
     :param key: A harness family, ``"anthropic"`` (Claude) or ``"openai"``
         (Codex).
+    :param env: Extra environment selecting the account, as for
+        :func:`harness_login`.
     :returns: ``True`` when the harness CLI is logged out after the attempt;
         ``False`` when the key has no logout command, the binary is missing, the
         process failed to spawn, or a login still resolves afterward.
@@ -1329,7 +1358,9 @@ def harness_logout(key: str) -> bool:
     if shutil.which(spec.binary) is None:
         return False
     try:
-        subprocess.run([spec.binary, *spec.logout_args], check=False, timeout=60)
+        subprocess.run(
+            [spec.binary, *spec.logout_args], check=False, timeout=60, env=_subprocess_env(env)
+        )
     except (OSError, subprocess.TimeoutExpired):
         return False
     # Drop cached logged-in verdicts so the confirmation below re-probes —
@@ -1337,4 +1368,4 @@ def harness_logout(key: str) -> bool:
     with _PROBE_CACHE_LOCK:
         for cache_key in [k for k in _LOGIN_PROBE_CACHE if k[0] == key]:
             del _LOGIN_PROBE_CACHE[cache_key]
-    return not harness_cli_logged_in(key)
+    return not _logged_in_as(key, env)

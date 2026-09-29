@@ -1125,7 +1125,7 @@ def test_harness_logout_runs_cli_logout_then_verifies(
         lambda k: state["logged_in"],
     )
 
-    def _run(argv: list[str], *, check: bool = False, timeout: float | None = None):
+    def _run(argv: list[str], *, check: bool = False, timeout: float | None = None, env=None):
         calls.append(argv)
         state["logged_in"] = False
         return subprocess.CompletedProcess(args=argv, returncode=0)

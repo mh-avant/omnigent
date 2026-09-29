@@ -591,6 +591,24 @@ def _claude_token_env_configured() -> bool:
     )
 
 
+def _default_subscription_account(harness: str) -> ProviderEntry | None:
+    """Return *harness*'s default provider when it is a subscription with its own login dir.
+
+    Such an account's login lives in its ``config_dir``, not the CLI's default
+    location, so readiness must check it there. Never raises.
+
+    :param harness: A canonical harness spelling, e.g. ``"claude-native"``.
+    :returns: The subscription entry, or ``None``.
+    """
+    try:
+        provider = default_provider_for_harness(load_config(), harness)
+    except Exception:
+        return None
+    if provider is None or provider.kind != SUBSCRIPTION_KIND or provider.config_dir is None:
+        return None
+    return provider
+
+
 def _claude_code_login_configured() -> bool:
     """Whether Claude Code's own subscription login is present on this machine.
 
@@ -600,6 +618,11 @@ def _claude_code_login_configured() -> bool:
 
     :returns: ``True`` when a usable Claude Code login is detected.
     """
+    account = _default_subscription_account("claude-sdk")
+    if account is not None:
+        from omnigent.onboarding.subscription_accounts import subscription_logged_in
+
+        return subscription_logged_in(account)
     try:
         from omnigent.onboarding import ambient
 
@@ -934,6 +957,11 @@ def _cli_family_availability(canonical: str, install_key: str) -> HarnessAvailab
     # without depending on the probe resolving the CLI on PATH.
     if install_key == ANTHROPIC_FAMILY and _claude_managed_gateway_configured():
         return True
+    account = _default_subscription_account(canonical)
+    if account is not None:
+        from omnigent.onboarding.subscription_accounts import subscription_logged_in
+
+        return True if subscription_logged_in(account) else "needs-auth"
     return (
         True
         if harness_cli_logged_in(install_key, timeout=READINESS_CLI_PROBE_TIMEOUT_S)

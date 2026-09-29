@@ -622,6 +622,7 @@ def _configure_harness_add(family: str | None = None) -> str | None:
         OPENAI_FAMILY,
         PI_SURFACE,
         RESPONSES_WIRE_API,
+        SUBSCRIPTION_CONFIG_DIR_ENV,
         SUBSCRIPTION_KIND,
         load_providers,
         provider_entry_settings,
@@ -825,22 +826,41 @@ def _configure_harness_add(family: str | None = None) -> str | None:
             raise click.ClickException("internal: subscription option missing a cli login")
         from omnigent.onboarding.configure_models import cli_display_name
 
-        # A harness has at most ONE subscription. If one is already configured
-        # for this CLI (under any name), offer to replace it — declining aborts
-        # before we touch any login.
+        # A second account of the same CLI gets its own login directory; the
+        # default-login subscription is replaced rather than duplicated.
         existing_subs = [
             n
             for n, e in load_providers(_load_global_config()).items()
-            if e.kind == SUBSCRIPTION_KIND and e.cli == cli_name
+            if e.kind == SUBSCRIPTION_KIND and e.cli == cli_name and e.config_dir is None
         ]
+        account_name = ""
+        account_dir: str | None = None
         if existing_subs:
-            replace = select(
-                f"A {cli_display_name(cli_name)} subscription is already configured. Replace it?",
-                ["Replace it", "Keep the current one"],
+            choices = ["Replace it", "Keep the current one"]
+            if cli_name in SUBSCRIPTION_CONFIG_DIR_ENV:
+                choices.append("Add another account (own login directory)")
+            picked = select(
+                f"A {cli_display_name(cli_name)} subscription is already configured.",
+                choices,
                 default=0,
                 clear_on_exit=True,
             )
-            if replace != 0:  # "Keep the current one" or Esc — abort the add
+            action = choices[picked] if picked >= 0 else ""
+            if action.startswith("Add another"):
+                account_name = prompt_text(
+                    "Name for this account", default=f"{cli_name}-account-2"
+                ).strip()
+                if not account_name:
+                    return None
+                if account_name in load_providers(_load_global_config()):
+                    return f"✗ A provider named {account_name!r} already exists"
+                account_dir = prompt_text(
+                    "Login directory for this account", default=f"~/.{account_name}"
+                ).strip()
+                if not account_dir:
+                    return None
+                existing_subs = []
+            elif action != "Replace it":  # "Keep the current one" or Esc — abort the add
                 return None
         # CLIs listed in _CLI_LOGIN_BRAND (claude / codex) require a login step.
         # CLIs not listed (pi) manage their own auth — no login step needed.
@@ -857,8 +877,13 @@ def _configure_harness_add(family: str | None = None) -> str | None:
             # once the CLI is actually authenticated — otherwise we'd persist a
             # phantom subscription that strands the user at the harness's own login
             # screen at run time (the exact bug this whole flow fixes).
+            login_env: dict[str, str] = {}
+            if account_dir is not None:
+                login_dir = os.path.expanduser(os.path.expandvars(account_dir))
+                os.makedirs(login_dir, mode=0o700, exist_ok=True)
+                login_env = {SUBSCRIPTION_CONFIG_DIR_ENV[cli_name]: login_dir}
             console.print(f"  [dim]Signing in to {disp} (its login will open)…[/dim]")
-            if not harness_login(login_family):
+            if not harness_login(login_family, env=login_env):
                 return f"✗ {disp} login not completed — subscription not added"
         # Drop the existing subscription(s) now that we know we're proceeding.
         # Done after any login so a failed login leaves the existing entry intact.
@@ -867,9 +892,9 @@ def _configure_harness_add(family: str | None = None) -> str | None:
             if isinstance(block, dict):
                 remaining = {k: v for k, v in block.items() if k not in existing_subs}
                 _save_global_config({"providers": remaining})
-        # Subscription name is derived from the CLI — no prompt.
-        name = f"{cli_name}-subscription"
-        entry = build_subscription_provider_entry(cli_name)
+        # The default-login subscription's name is derived from the CLI.
+        name = account_name if account_dir is not None else f"{cli_name}-subscription"
+        entry = build_subscription_provider_entry(cli_name, account_dir)
 
     elif kind == "gateway":
         gemini_gateway = family == GEMINI_FAMILY
@@ -3258,6 +3283,13 @@ def _remove_subscription(provider: str, family: str) -> str | None:
         if spec is not None and spec.logout_args is not None
         else "logout"
     )
+    from omnigent.onboarding.provider_config import load_providers
+    from omnigent.onboarding.subscription_accounts import subscription_home_env
+
+    entry = load_providers(_load_global_config()).get(provider)
+    account_env = subscription_home_env(entry) if entry is not None else {}
+    if account_env:
+        logout_cmd = " ".join([*(f"{k}={v}" for k, v in account_env.items()), logout_cmd])
     choice = select(
         f"Remove {disp} subscription?",
         [f"Yes — sign out of {disp} and remove", "No — keep it"],
@@ -3271,7 +3303,7 @@ def _remove_subscription(provider: str, family: str) -> str | None:
     )
     if choice != 0:
         return None
-    signed_out = harness_logout(family)
+    signed_out = harness_logout(family, env=account_env)
     # Drop our entry regardless — the user asked to remove it. If logout failed
     # we say so, since the standalone login may persist (and be re-detected).
     _remove_credential(provider)
