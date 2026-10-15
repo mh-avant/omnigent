@@ -1213,7 +1213,7 @@ class HostProvidersResultFrame:
 
     request_id: str
     status: str
-    providers: list[dict[str, str | bool]] = field(default_factory=list)
+    providers: list[dict[str, str | bool | None]] = field(default_factory=list)
     error: str | None = None
 
 
@@ -3042,13 +3042,15 @@ def _decode_providers_result(msg: _JsonObject) -> HostProvidersResultFrame:
     raw = msg.get("providers", [])
     if not isinstance(raw, list):
         raise ValueError("frame field must be a list of providers: 'providers'")
-    providers: list[dict[str, str | bool]] = []
+    providers: list[dict[str, str | bool | None]] = []
     for item in raw:
         if not isinstance(item, dict):
             raise ValueError("frame field must be a list of providers: 'providers'")
-        row: dict[str, str | bool] = {
+        row: dict[str, str | bool | None] = {
             key: _required_str(item, key) for key in _PROVIDER_STR_FIELDS
         }
+        # Absent from older hosts, which cannot switch a running session.
+        row["switch_group"] = _optional_nullable_str(item, "switch_group")
         for key in _PROVIDER_BOOL_FIELDS:
             value = item.get(key)
             if not isinstance(value, bool):

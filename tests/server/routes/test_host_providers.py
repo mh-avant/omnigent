@@ -23,12 +23,13 @@ from omnigent.server.routes.host_providers import create_host_providers_router
 from omnigent.stores.host_store import HostStore
 
 _HOST_ID = "a828988dc0b441fb8d04dad3761773b9"
-_MAX2: dict[str, str | bool] = {
+_MAX2: dict[str, str | bool | None] = {
     "name": "claude-max2",
     "kind": "subscription",
-    "label": "claude CLI login (~/.claude-max2)",
+    "label": "claude account token",
     "default": False,
     "ready": True,
+    "switch_group": "3f2a9c1d0b7e",
 }
 
 

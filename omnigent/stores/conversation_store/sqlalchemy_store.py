@@ -3472,6 +3472,41 @@ class SqlAlchemyConversationStore(ConversationStore):
         descending_scan = is_desc if forward else not is_desc
         return stmt.where(row < cursor_row_values if descending_scan else row > cursor_row_values)
 
+    def set_provider_override(
+        self, conversation_id: str, provider: str | None
+    ) -> Conversation | None:
+        """
+        Set the provider a session runs on, keeping its other overrides.
+
+        :param conversation_id: Conversation id, e.g. ``"conv_abc123"``.
+        :param provider: A ``providers:`` entry name, e.g. ``"claude-max2"``,
+            or ``None`` for the host default.
+        :returns: The updated conversation, or ``None`` if it does not exist.
+        """
+        now = now_epoch()
+
+        def update_ap(ap_sess: Session) -> bool:
+            row_query = select(SqlConversation).where(
+                SqlConversation.workspace_id == current_workspace_id(),
+                SqlConversation.id == conversation_id,
+            )
+            if self._supports_for_update:
+                row_query = row_query.with_for_update()
+            row = ap_sess.scalar(row_query)
+            if not row:
+                return False
+            overrides = _decode_session_overrides(row.session_overrides)
+            overrides["provider_override"] = provider
+            row.session_overrides = _encode_session_overrides(overrides)
+            row.updated_at = now
+            return True
+
+        if not run_write_transaction(
+            self._conv_session_immediate, "set_session_provider", update_ap
+        ):
+            return None
+        return self.get_conversation(conversation_id)
+
     def update_conversation_with_changes(
         self,
         conversation_id: str,

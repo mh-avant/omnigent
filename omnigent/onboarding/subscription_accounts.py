@@ -9,6 +9,7 @@ honors (:data:`~omnigent.onboarding.provider_config.SUBSCRIPTION_CONFIG_DIR_ENV`
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shlex
@@ -368,13 +369,32 @@ def _provider_label(entry: ProviderEntry, family: str) -> str:
     return f"{entry.kind} · {host}" if host else entry.kind
 
 
-def provider_choices(config: dict[str, object], harness: str) -> list[dict[str, str | bool]]:
+def _claude_switch_group(entry: ProviderEntry) -> str:
+    """Return an opaque id of the Claude directory a session on *entry* uses.
+
+    A session keeps its conversation in that directory, so it can only move
+    between providers that share one. Every provider uses the host's own
+    Claude directory except a subscription with its own ``config_dir``.
+
+    :param entry: A provider serving the ``anthropic`` family.
+    :returns: e.g. ``"3f2a9c1d0b7e"``; never the path itself.
+    """
+    directory = subscription_config_dir(entry) if entry.cli == "claude" else None
+    resolved = directory or _default_login_dir("claude", os.environ)
+    return hashlib.sha256(os.path.realpath(resolved).encode()).hexdigest()[:12]
+
+
+def provider_choices(
+    config: dict[str, object], harness: str
+) -> list[dict[str, str | bool | None]]:
     """List the configured providers a session of *harness* could run on.
 
     :param config: The parsed ``~/.omnigent/config.yaml`` mapping.
     :param harness: A canonical harness, e.g. ``"claude-native"``.
-    :returns: Rows of ``name`` / ``kind`` / ``label`` / ``default`` / ``ready``;
-        ``ready`` is ``False`` for a subscription account that is not logged in.
+    :returns: Rows of ``name`` / ``kind`` / ``label`` / ``default`` / ``ready``
+        / ``switch_group``; ``ready`` is ``False`` for a subscription account
+        that is not logged in, and a running Claude session can switch between
+        rows with the same ``switch_group`` (``None`` for other families).
         Empty for a harness with no provider family.
     :raises OmnigentError: If the provider config is malformed.
     """
@@ -382,7 +402,7 @@ def provider_choices(config: dict[str, object], harness: str) -> list[dict[str, 
     if family is None:
         return []
     default = default_provider_for_harness(config, harness)
-    rows: list[dict[str, str | bool]] = []
+    rows: list[dict[str, str | bool | None]] = []
     for entry in load_providers(config).values():
         if family not in provider_families(entry):
             continue
@@ -397,6 +417,9 @@ def provider_choices(config: dict[str, object], harness: str) -> list[dict[str, 
                 "ready": entry.cli not in _CLI_FAMILY
                 or entry.kind != SUBSCRIPTION_KIND
                 or subscription_logged_in(entry),
+                "switch_group": (
+                    _claude_switch_group(entry) if family == ANTHROPIC_FAMILY else None
+                ),
             }
         )
     return rows

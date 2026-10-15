@@ -3252,6 +3252,18 @@
             "description": "`False` when a subscription account is not logged in.",
             "title": "Ready",
             "type": "boolean"
+          },
+          "switch_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque id shared by the providers a running session can switch between, e.g. `\"3f2a9c1d0b7e\"`; `None` when switching is not supported.",
+            "title": "Switch Group"
           }
         },
         "required": [
@@ -7515,6 +7527,60 @@
           "name"
         ],
         "title": "SessionProjectSummary",
+        "type": "object"
+      },
+      "SessionProviderRequest": {
+        "description": "Body of `POST /v1/sessions/{id}/provider`.",
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A `providers:` entry name on the session's host, e.g. `\"claude-max2\"`, or `None` for the host default.",
+            "title": "Provider"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "SessionProviderRequest",
+        "type": "object"
+      },
+      "SessionProviderResponse": {
+        "description": "Result of a provider switch.",
+        "properties": {
+          "applied": {
+            "description": "`\"now\"` when the runner restarts (or starts) on it right away, `\"after_turn\"` when it restarts once the current turn ends.",
+            "enum": [
+              "now",
+              "after_turn"
+            ],
+            "title": "Applied",
+            "type": "string"
+          },
+          "provider_override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The session's provider now, `None` for the host default.",
+            "title": "Provider Override"
+          }
+        },
+        "required": [
+          "provider_override",
+          "applied"
+        ],
+        "title": "SessionProviderResponse",
         "type": "object"
       },
       "SessionReasoningEffortEvent": {
@@ -15350,6 +15416,59 @@
         "summary": "Update Policy",
         "tags": [
           "session_policies"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/provider": {
+      "post": {
+        "description": "Switch a running session to another provider, e.g. another Claude account.\n\nOwner-only: the provider decides which of the host owner's accounts\npays for the session.",
+        "operationId": "set_session_provider_v1_sessions__session_id__provider_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionProviderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionProviderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Provider",
+        "tags": [
+          "sessions"
         ]
       }
     },

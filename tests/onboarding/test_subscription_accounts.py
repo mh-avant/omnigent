@@ -372,10 +372,11 @@ def test_token_account_signs_in_with_its_token(monkeypatch: pytest.MonkeyPatch) 
     assert subscription_token_env(entry) == {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-max2"}
     # A token account shares the default login directory, so it sets none.
     assert subscription_home_env(entry) == {}
-    row = next(
-        r for r in provider_choices(_token_config(), "claude-native") if r["name"] == "max2"
-    )
+    rows = provider_choices(_token_config(), "claude-native")
+    row = next(r for r in rows if r["name"] == "max2")
     assert row["label"] == "claude account token"
+    # It shares the default login's sessions, so a running session can switch to it.
+    assert row["switch_group"] == rows[0]["switch_group"]
     assert row["ready"] is True
     assert "sk-ant-oat01" not in json.dumps(row)
 
@@ -421,7 +422,11 @@ def test_provider_choices_list_family_providers_without_secrets(tmp_path: Path) 
     _write_claude_login(tmp_path / "m1")
 
     rows = provider_choices(_session_config(tmp_path), "claude-native")
+    groups = {row["name"]: row.pop("switch_group") for row in rows}
 
+    # Separate login dirs keep separate sessions; the rest share the host's.
+    assert len({groups["max1"], groups["max2"], groups["dbx"]}) == 3
+    assert groups["dbx"] == groups["openrouter"]
     assert rows == [
         {
             "name": "max1",

@@ -1067,6 +1067,19 @@ class ConversationStore(ABC):
         """
         ...
 
+    def set_provider_override(
+        self, conversation_id: str, provider: str | None
+    ) -> Conversation | None:
+        """Set the provider a session runs on, keeping its other overrides.
+
+        :param conversation_id: Conversation id, e.g. ``"conv_abc123"``.
+        :param provider: A ``providers:`` entry name, e.g. ``"claude-max2"``,
+            or ``None`` for the host default.
+        :returns: The updated conversation, or ``None`` if it does not exist.
+        :raises NotImplementedError: When the store cannot change it.
+        """
+        raise NotImplementedError("this store cannot change a session's provider")
+
     @abstractmethod
     def update_conversation_with_changes(
         self,

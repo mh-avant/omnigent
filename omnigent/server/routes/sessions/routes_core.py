@@ -280,27 +280,54 @@ async def _wake_runner_for_model_change(
     runner_router: RunnerRouter | None,
 ) -> Conversation:
     """Restore a sleeping native session before applying an explicit model pick."""
+    return await wake_native_runner(
+        request.app.state,
+        conv,
+        conversation_store,
+        runner_router,
+        offline_message=(
+            "Cannot switch models while the session host is offline. Reconnect the host and retry."
+        ),
+    )
+
+
+async def wake_native_runner(
+    app_state: Any,
+    conv: Conversation,
+    conversation_store: ConversationStore,
+    runner_router: RunnerRouter | None,
+    *,
+    offline_message: str,
+) -> Conversation:
+    """Bring a native session's runner and terminal up if it is not running.
+
+    :param app_state: The FastAPI ``app.state`` carrying the host registry.
+    :param conv: The session, e.g. one whose runner just stopped.
+    :param conversation_store: Store for the runner binding.
+    :param runner_router: Routes requests to the session's runner.
+    :param offline_message: Error message when the host is offline.
+    :returns: The refreshed conversation.
+    :raises OmnigentError: ``runner_unavailable`` when the host is offline or
+        the terminal does not start.
+    """
     if await _get_runner_client(conv.id, runner_router) is not None:
         return conv
     runner_client, conv = await ensure_runner_connected(
         session_id=conv.id,
         conv=conv,
-        app_state=request.app.state,
+        app_state=app_state,
         conversation_store=conversation_store,
         runner_router=runner_router,
         raise_host_refusal=True,
     )
     if runner_client is None:
-        raise OmnigentError(
-            "Cannot switch models while the session host is offline. Reconnect the host and retry.",
-            code=ErrorCode.RUNNER_UNAVAILABLE,
-        )
+        raise OmnigentError(offline_message, code=ErrorCode.RUNNER_UNAVAILABLE)
     terminal_ready = await _ensure_runner_session_initialized(
         conv.id,
         conv,
         runner_client,
         conversation_store,
-        initializer=getattr(request.app.state, "runner_session_initializer", None),
+        initializer=getattr(app_state, "runner_session_initializer", None),
         suppress_recovery_turn=True,
         require_success=True,
     )

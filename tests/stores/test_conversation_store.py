@@ -217,6 +217,25 @@ def test_create_persists_initial_labels_and_overrides(
     assert fetched.harness_override == "codex-native"
 
 
+def test_set_provider_override_keeps_the_other_overrides(
+    conversation_store: SqlAlchemyConversationStore,
+) -> None:
+    """Switching a session's provider leaves its model and effort as they were."""
+    created = conversation_store.create_conversation(
+        reasoning_effort="high", model_override="model-a", provider_override="claude-max1"
+    )
+
+    switched = conversation_store.set_provider_override(created.id, "claude-max2")
+
+    assert switched is not None
+    assert switched.provider_override == "claude-max2"
+    assert switched.model_override == "model-a"
+    assert switched.reasoning_effort == "high"
+    cleared = conversation_store.set_provider_override(created.id, None)
+    assert cleared is not None and cleared.provider_override is None
+    assert conversation_store.set_provider_override("0" * 32, "claude-max2") is None
+
+
 def test_create_with_existing_caller_supplied_id_raises(db_uri: str) -> None:
     """A stable caller id turns a retry from another store into a typed conflict."""
     from omnigent.stores.conversation_store import ConversationAlreadyExistsError

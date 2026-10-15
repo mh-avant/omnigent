@@ -897,6 +897,7 @@ def create_sessions_router(
     from omnigent.server.routes.sessions.routes_hooks import register_hooks_routes
     from omnigent.server.routes.sessions.routes_items import register_items_routes
     from omnigent.server.routes.sessions.routes_permissions import register_permissions_routes
+    from omnigent.server.routes.sessions.routes_provider import register_provider_routes
     from omnigent.server.routes.sessions.routes_resources import register_resources_routes
 
     register_core_routes(
@@ -916,6 +917,16 @@ def create_sessions_router(
         host_registry=host_registry,
         project_store=project_store,
         background_title_coordinator=background_title_coordinator,
+    )
+
+    register_provider_routes(
+        router,
+        conversation_store=conversation_store,
+        agent_store=agent_store,
+        runner_router=runner_router,
+        auth_provider=auth_provider,
+        permission_store=permission_store,
+        host_registry=host_registry,
     )
 
     register_hooks_routes(

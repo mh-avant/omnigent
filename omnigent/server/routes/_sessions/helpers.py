@@ -5056,6 +5056,10 @@ def _publish_status(
     _session_status_cache[session_id] = status
     if previous_status != status:
         _publish_child_status_to_parent(session_id, status)
+        # A provider switch waits for its runner's sessions to finish their turns.
+        from omnigent.server.routes.sessions.routes_provider import note_session_status
+
+        note_session_status(status)
     # Mirror the transition onto the conversation row (best-effort,
     # deduplicated, off-loop) so replicas that don't hold this session's
     # runner tunnel serve the same sidebar status.

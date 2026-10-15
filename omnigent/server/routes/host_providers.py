@@ -32,6 +32,9 @@ class HostProviderSummary(BaseModel):
     :param label: Where it authenticates, e.g. ``"claude CLI login (~/.claude-max2)"``.
     :param default: Whether sessions use it when none is chosen.
     :param ready: ``False`` when a subscription account is not logged in.
+    :param switch_group: Opaque id shared by the providers a running session
+        can switch between, e.g. ``"3f2a9c1d0b7e"``; ``None`` when switching is
+        not supported.
     """
 
     name: str
@@ -39,6 +42,7 @@ class HostProviderSummary(BaseModel):
     label: str
     default: bool
     ready: bool
+    switch_group: str | None = None
 
 
 class HostProvidersResponse(BaseModel):
