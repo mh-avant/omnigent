@@ -379,6 +379,11 @@ export interface Session {
    */
   modelOverride?: string | null;
   /**
+   * Host provider (account) the session runs on, e.g. ``"claude-max2"``;
+   * `null` runs on the host's default provider.
+   */
+  providerOverride?: string | null;
+  /**
    * Per-session cost-control switch: `"on"` activates the spec's
    * configured cost-control mode, `"off"` disables cost control for
    * this session, `null` defers to the spec default. Driven by the

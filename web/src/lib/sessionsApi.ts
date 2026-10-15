@@ -173,6 +173,8 @@ interface SessionResponseWire {
   /** Effective brain harness (override-aware), e.g. ``"claude-sdk"``. */
   harness?: string | null;
   model_override?: string | null;
+  /** Host provider the session runs on; `null` = the host default. */
+  provider_override?: string | null;
   inference_configured?: boolean;
   inference_error?: string | null;
   /** Per-session cost-control switch; `null`/absent = spec default. */
@@ -345,6 +347,7 @@ function sessionFromWire(wire: SessionResponseWire): Session {
     llmModel: wire.llm_model,
     harness: wire.harness ?? null,
     modelOverride: wire.model_override,
+    providerOverride: wire.provider_override,
     costControlModeOverride: wire.cost_control_mode_override,
     subagentRoutingOverride: wire.subagent_routing_override,
     shareWorkspaceFiles: wire.share_workspace_files ?? false,
@@ -1099,6 +1102,30 @@ export async function updateSession(
     body: JSON.stringify(body),
   });
   return sessionFromWire(await readJsonOrThrow<SessionResponseWire>(res));
+}
+
+/** When a provider switch takes effect: now (runner restarts) or after the current turn. */
+export type ProviderSwitchApplied = "now" | "after_turn";
+
+/**
+ * Move a session to another of its host's providers (accounts). `null` goes
+ * back to the host default. Only providers sharing the current one's switch
+ * group are accepted; others need a new session.
+ */
+export async function switchSessionProvider(
+  sessionId: string,
+  provider: string | null,
+): Promise<{ providerOverride: string | null; applied: ProviderSwitchApplied }> {
+  const res = await authenticatedFetch(`/v1/sessions/${encodeURIComponent(sessionId)}/provider`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider }),
+  });
+  const wire = await readJsonOrThrow<{
+    provider_override: string | null;
+    applied: ProviderSwitchApplied;
+  }>(res);
+  return { providerOverride: wire.provider_override ?? null, applied: wire.applied };
 }
 
 interface RunnerSummaryWire {

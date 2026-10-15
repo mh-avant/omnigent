@@ -94,6 +94,7 @@ vi.mock("@/hooks/useHosts", async (importOriginal) => ({
   ...(await importOriginal<typeof UseHostsModule>()),
   useHosts: (opts: unknown) => useHostsMock(opts),
 }));
+vi.mock("@/hooks/useHostProviders", () => ({ useHostProviders: () => ({ data: [] }) }));
 vi.mock("@/hooks/RunnerHealthProvider", async (importOriginal) => ({
   ...(await importOriginal<typeof RunnerHealthProviderModule>()),
   useSessionHostOnline: (id: string | undefined) => useSessionHostOnlineMock(id),

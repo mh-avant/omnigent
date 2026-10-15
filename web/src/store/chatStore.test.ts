@@ -16764,6 +16764,53 @@ describe("chatStore — setSubagentRouting", () => {
   });
 });
 
+describe("chatStore — setProvider", () => {
+  function routeProviderPost(response: Response | Promise<Response>): void {
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/v1/sessions/conv_acct/provider" && init?.method === "POST") return response;
+      return defaultFetchHandler(input, init);
+    });
+  }
+
+  function providerOverride(): string | null | undefined {
+    return client.getQueryData<{ providerOverride?: string | null }>(["session", "conv_acct"])
+      ?.providerOverride;
+  }
+
+  it("POSTs the account and records it on the session snapshot", async () => {
+    seedSession("conv_acct", []);
+    await useChatStore.getState().switchTo("conv_acct");
+    routeProviderPost(mockResponse({ provider_override: "claude-max2", applied: "after_turn" }));
+
+    await expect(useChatStore.getState().setProvider("claude-max2")).resolves.toBe("after_turn");
+
+    const post = fetchMock.mock.calls.find(
+      ([u, init]) => String(u).endsWith("/provider") && (init as RequestInit)?.method === "POST",
+    ) as [string, RequestInit];
+    expect(JSON.parse(post[1].body as string)).toEqual({
+      provider: "claude-max2",
+    });
+    expect(providerOverride()).toBe("claude-max2");
+  });
+
+  it("rejects with the server's message and keeps the snapshot", async () => {
+    seedSession("conv_acct", []);
+    await useChatStore.getState().switchTo("conv_acct");
+    routeProviderPost(
+      mockResponse(
+        { error: { code: "invalid_request", message: "claude-max2 needs a new session" } },
+        { ok: false, status: 409 },
+      ),
+    );
+
+    await expect(useChatStore.getState().setProvider("claude-max2")).rejects.toThrow(
+      "claude-max2 needs a new session",
+    );
+    expect(providerOverride() ?? null).toBeNull();
+  });
+});
+
 // Nothing pushes a routing-switch change to the client, so a control that only
 // ever read the bind-time snapshot would keep showing a stale value (the
 // "Default shown while 'on' is stored" mismatch). These pin the re-read.

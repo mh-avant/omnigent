@@ -9,6 +9,7 @@ import type * as AgentLabelsModule from "@/lib/agentLabels";
 import type * as GoalApiModule from "@/lib/goalApi";
 import type * as UseChildSessionsModule from "@/hooks/useChildSessions";
 import type { ChildSessionInfo } from "@/hooks/useChildSessions";
+import type { HostProvider } from "@/hooks/useHostProviders";
 import type * as FileViewerContextModule from "@/shell/FileViewerContext";
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -133,6 +134,7 @@ const { composerSessionSnapshot } = vi.hoisted(() => ({
     workspace: null as string | null,
     labels: {} as Record<string, string>,
     gitBranch: null as string | null,
+    providerOverride: null as string | null,
   },
 }));
 vi.mock("@/hooks/useSession", async (importOriginal) => ({
@@ -143,6 +145,12 @@ vi.mock("@/hooks/useSession", async (importOriginal) => ({
     error: null,
   }),
 }));
+const { hostProvidersMock } = vi.hoisted(() => ({
+  hostProvidersMock: vi.fn((_hostId: string | null, _harness: string | null) => ({
+    data: [] as HostProvider[],
+  })),
+}));
+vi.mock("@/hooks/useHostProviders", () => ({ useHostProviders: hostProvidersMock }));
 vi.mock("@/hooks/useHosts", async (importOriginal) => ({
   ...(await importOriginal<typeof UseHostsModule>()),
   useHosts: () => ({ data: [] }),
@@ -6249,4 +6257,134 @@ describe("saved sandbox inference policy", () => {
       expect(useChatStore.getState().setModel).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("Composer account switch", () => {
+  const MAX1: HostProvider = {
+    name: "claude-max1",
+    kind: "subscription",
+    label: "claude CLI login (~/.claude-max1)",
+    default: true,
+    ready: true,
+    switch_group: "claude",
+  };
+  const MAX2: HostProvider = {
+    ...MAX1,
+    name: "claude-max2",
+    label: "~/.claude-max2",
+    default: false,
+  };
+  const MAX3: HostProvider = {
+    ...MAX2,
+    name: "claude-max3",
+    label: "~/.claude-max3",
+    ready: false,
+  };
+  // An older host omits switch_group, so nothing can swap onto it in place.
+  const DBX: HostProvider = {
+    name: "databricks",
+    kind: "databricks",
+    label: "Databricks profile alt",
+    default: false,
+    ready: true,
+  };
+
+  // A fresh conversation per test, so no earlier test's entry state carries over.
+  let sessionId = "";
+  let sessionCount = 0;
+  beforeEach(() => {
+    sessionId = `conv_acct_${++sessionCount}`;
+    useChatStore.setState({ conversationId: sessionId, sessionHarness: "claude-native" });
+    composerSessionSnapshot.hostId = "host_1";
+    hostProvidersMock.mockReturnValue({ data: [MAX1, MAX2, MAX3, DBX] });
+  });
+  afterEach(() => {
+    cleanup();
+    composerSessionSnapshot.hostId = null;
+    composerSessionSnapshot.providerOverride = null;
+    hostProvidersMock.mockReturnValue({ data: [] });
+    useChatStore.setState({ conversationId: null, sessionHarness: null });
+    vi.restoreAllMocks();
+  });
+
+  async function openAccounts() {
+    openSessionConfig();
+    fireEvent.click(screen.getByTestId("composer-agent-edit"));
+    return screen.findByTestId("composer-agent-accounts");
+  }
+
+  it("lists the host's accounts and blocks ones that need a separate login", async () => {
+    composerSessionSnapshot.providerOverride = "claude-max2";
+    render(<Composer {...composerProps()} />);
+    await openAccounts();
+
+    expect(hostProvidersMock).toHaveBeenLastCalledWith("host_1", "claude-native");
+    expect(screen.getByTestId("composer-agent-account-claude-max2")).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByTestId("composer-agent-account-claude-max1")).not.toHaveAttribute(
+      "data-disabled",
+    );
+    const notSignedIn = screen.getByTestId("composer-agent-account-claude-max3");
+    expect(notSignedIn).toHaveAttribute("data-disabled");
+    expect(notSignedIn).toHaveTextContent("not signed in");
+    const separate = screen.getByTestId("composer-agent-account-databricks");
+    expect(separate).toHaveAttribute("data-disabled");
+    expect(separate).toHaveTextContent("Separate login — start a new session");
+  });
+
+  it("is hidden with a single account or outside Claude harnesses", async () => {
+    hostProvidersMock.mockReturnValue({ data: [MAX1] });
+    const view = render(<Composer {...composerProps()} />);
+    openSessionConfig();
+    fireEvent.click(screen.getByTestId("composer-agent-edit"));
+    await screen.findByTestId("composer-agent-efforts");
+    expect(screen.queryByTestId("composer-agent-accounts")).toBeNull();
+    view.unmount();
+
+    hostProvidersMock.mockClear();
+    useChatStore.setState({ sessionHarness: "codex-native" });
+    render(<Composer {...composerProps()} />);
+    expect(hostProvidersMock).toHaveBeenLastCalledWith(null, null);
+  });
+
+  it.each([
+    ["now", "Switched to claude-max2 — Claude is restarting"],
+    ["after_turn", "Switches to claude-max2 after this turn"],
+  ] as const)("POSTs the switch and reports when it applies (%s)", async (applied, notice) => {
+    const fetchSpy = vi.spyOn(identity, "authenticatedFetch").mockResolvedValue(
+      new Response(JSON.stringify({ provider_override: "claude-max2", applied }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const success = vi.spyOn(toast, "success");
+    render(<Composer {...composerProps()} />);
+    await openAccounts();
+
+    fireEvent.click(screen.getByTestId("composer-agent-account-claude-max2"));
+
+    await waitFor(() => expect(success).toHaveBeenCalledWith(notice));
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/v1/sessions/${sessionId}/provider`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ provider: "claude-max2" });
+  });
+
+  it("shows the server's error when the switch is refused", async () => {
+    vi.spyOn(identity, "authenticatedFetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { code: "conflict", message: "claude-max2 is not signed in" } }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const error = vi.spyOn(toast, "error");
+    render(<Composer {...composerProps()} />);
+    await openAccounts();
+
+    fireEvent.click(screen.getByTestId("composer-agent-account-claude-max2"));
+
+    await waitFor(() => expect(error).toHaveBeenCalledWith("claude-max2 is not signed in"));
+  });
 });
