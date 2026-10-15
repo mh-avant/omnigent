@@ -7346,6 +7346,21 @@ def _claude_native_model_from_spec(agent_spec: AgentSpec | ResolvedSpec | None) 
     return model
 
 
+def _claude_native_pinned_provider(agent_spec: AgentSpec | ResolvedSpec | None) -> str | None:
+    """
+    Return the provider an agent spec pins through ``executor.auth``, if any.
+
+    :param agent_spec: Agent spec object, or a resolved wrapper carrying a
+        ``spec`` attribute. ``None`` means no spec was available.
+    :returns: The ``providers:`` entry name, e.g. ``"claude-max2"``, or ``None``.
+    """
+    from omnigent.spec.types import ProviderAuth
+
+    spec = agent_spec.spec if isinstance(agent_spec, ResolvedSpec) else agent_spec
+    auth = spec.executor.auth if spec is not None else None
+    return auth.name if isinstance(auth, ProviderAuth) else None
+
+
 def _native_startup_raw_instructions_from_spec(
     agent_spec: AgentSpec | ResolvedSpec | None,
 ) -> str | None:
@@ -8598,7 +8613,10 @@ async def _auto_create_claude_terminal(
     )
     from omnigent.harnesses.claude_native.forwarder import reset_transcript_forward_state
     from omnigent.inner.datamodel import OSEnvSpec, TerminalEnvSpec
-    from omnigent.onboarding.subscription_accounts import require_session_account_dir
+    from omnigent.onboarding.subscription_accounts import (
+        claude_account_env,
+        require_session_account_dir,
+    )
 
     workspace = str(
         _claude_session_workspace(
@@ -9322,9 +9340,17 @@ async def _auto_create_claude_terminal(
     # Seed trust and onboarding in the config selected by the terminal's launch
     # environment, once that environment is known to log in to the session's account.
     try:
+        if claude_config is None:
+            # Claude's own login: a token account hands Claude its token.
+            account_env = await asyncio.to_thread(
+                claude_account_env, _claude_native_pinned_provider(agent_spec)
+            )
+            env_spec = dataclasses.replace(env_spec, env={**env_spec.env, **account_env})
         launch_cwd = _claude_terminal_launch_cwd(env_spec, agent_os_env)
         launch_env = _claude_terminal_launch_env(env_spec)
-        require_session_account_dir("claude", claude_launch_config_dir(launch_cwd, launch_env))
+        require_session_account_dir(
+            "claude", claude_launch_config_dir(launch_cwd, launch_env), launch_env
+        )
         ensure_claude_workspace_trusted(launch_cwd, env=launch_env)
     except BaseException as seed_error:
         # No forwarder owns the routers yet, so release the ones this launch started.

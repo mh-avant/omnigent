@@ -879,6 +879,38 @@ def test_remove_subscription_signs_out_and_removes(isolated_config, monkeypatch)
     assert "claude-subscription" not in cfg.get("providers", {})
 
 
+def test_remove_token_account_keeps_the_shared_login(isolated_config, monkeypatch) -> None:
+    """Removing a token account deletes its token but never runs the CLI logout.
+
+    Token accounts share the default login directory, so a logout there would
+    sign the user out of their other Claude account.
+    """
+    from omnigent.onboarding import secrets
+
+    secrets.store_secret("claude-max2", "sk-ant-oat01-max2")
+    _seed_config(
+        isolated_config,
+        {
+            "claude-max2": {
+                "kind": "subscription",
+                "cli": "claude",
+                "token_ref": "keychain:claude-max2",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_install.harness_logout",
+        lambda family, **_: pytest.fail("a token account must not sign out the shared login"),
+    )
+    # L1 1=Claude → L2 1=select the account → L3 2=Remove → confirm 1=Yes → L2 q → L1 q.
+    stdin = "\n".join(["1", "1", "2", "1", "q", "q"]) + "\n"
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
+    assert result.exit_code == 0, result.output
+
+    assert secrets.load_secret("claude-max2") is None
+    assert "claude-max2" not in _config_yaml(isolated_config).get("providers", {})
+
+
 def test_remove_subscription_declined_keeps_it_and_login(isolated_config, monkeypatch) -> None:
     """Declining the remove-confirm leaves the entry AND never logs out.
 
@@ -1170,9 +1202,9 @@ def test_add_another_subscription_account_logs_into_its_own_dir(
         lambda family, env=None: logins.append(dict(env or {})) or True,
     )
     account_dir = tmp_path / "claude-max2"
-    # L1 1=Claude → L2 2=+Add → 2=Claude subscription → 3=Add another account →
-    # name (default) → login dir → L2 q → L1 q.
-    stdin = "\n".join(["1", "2", "2", "3", "", str(account_dir), "q", "q"]) + "\n"
+    # L1 1=Claude → L2 2=+Add → 2=Claude subscription → 4=Add another account (own
+    # login directory) → name (default) → login dir → L2 q → L1 q.
+    stdin = "\n".join(["1", "2", "2", "4", "", str(account_dir), "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 
@@ -1186,6 +1218,35 @@ def test_add_another_subscription_account_logs_into_its_own_dir(
         "config_dir": str(account_dir),
     }
     # The first account keeps the Claude default.
+    assert get_default_provider(_config_yaml(isolated_config), "anthropic").name == "claude"
+
+
+def test_add_another_subscription_account_stores_its_token(isolated_config, monkeypatch) -> None:
+    """A token account stores the pasted token and shares the default login."""
+    from omnigent.onboarding import secrets
+
+    _seed_config(
+        isolated_config,
+        {"claude": {"kind": "subscription", "default": True, "cli": "claude"}},
+    )
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_install.harness_login",
+        lambda family, env=None: pytest.fail("a token account has no login to drive"),
+    )
+    # L1 1=Claude → L2 2=+Add → 2=Claude subscription → 3=Add another account
+    # (token) → name (default) → token → L2 q → L1 q.
+    stdin = "\n".join(["1", "2", "2", "3", "", "sk-ant-oat01-max2", "q", "q"]) + "\n"
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
+    assert result.exit_code == 0, result.output
+
+    assert "sk-ant-oat01-max2" not in result.output
+    assert secrets.load_secret("claude-account-2") == "sk-ant-oat01-max2"
+    providers = _config_yaml(isolated_config)["providers"]
+    assert providers["claude-account-2"] == {
+        "kind": "subscription",
+        "cli": "claude",
+        "token_ref": "keychain:claude-account-2",
+    }
     assert get_default_provider(_config_yaml(isolated_config), "anthropic").name == "claude"
 
 

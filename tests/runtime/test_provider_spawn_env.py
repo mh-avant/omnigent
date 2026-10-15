@@ -1734,6 +1734,31 @@ def test_spec_pinned_codex_account_sets_source_codex_home(
     assert env["HARNESS_CODEX_MODEL_PROVIDER"] == "openai"
 
 
+def test_token_account_hands_claude_sdk_its_token(
+    config_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Claude token account sets CLAUDE_CODE_OAUTH_TOKEN and keeps the login dir."""
+    monkeypatch.setenv("MAX2_TOKEN", "sk-ant-oat01-max2")
+    _write_config(
+        config_home,
+        {
+            "providers": {
+                "max2": {
+                    "kind": "subscription",
+                    "cli": "claude",
+                    "token_ref": "env:MAX2_TOKEN",
+                    "default": True,
+                }
+            }
+        },
+    )
+
+    env = _build_claude_sdk_spawn_env(_make_spec(harness="claude-sdk"), workdir=None)
+
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-max2"
+    assert "CLAUDE_CONFIG_DIR" not in env
+
+
 def test_default_login_subscription_leaves_login_dir_env_unset(config_home: Path) -> None:
     """A subscription without config_dir keeps the process's own login dir."""
     _write_config(

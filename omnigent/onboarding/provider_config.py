@@ -137,6 +137,11 @@ SUBSCRIPTION_CONFIG_DIR_ENV: dict[str, str] = {
     "codex": "CODEX_HOME",
 }
 
+# The env var a subscription CLI reads a long-lived account token from. A
+# ``subscription`` entry's ``token_ref`` is resolved into it, so accounts that
+# share a login directory (and its sessions) differ only by credential.
+SUBSCRIPTION_TOKEN_ENV: dict[str, str] = {"claude": "CLAUDE_CODE_OAUTH_TOKEN"}
+
 # The CLIs whose own config file this build knows how to drive for a
 # ``cli-config`` provider. A ``cli-config`` entry naming any other CLI is a
 # shape from a newer build (or a stale entry a newer build wrote, e.g. a
@@ -430,6 +435,11 @@ class ProviderEntry:
         CLI config directory holding this account's login, e.g.
         ``"~/.claude-max2"``. Exported as ``CLAUDE_CONFIG_DIR`` / the source
         ``CODEX_HOME``. Stored unexpanded; ``None`` uses the process default.
+    :param token_ref: For a ``claude`` ``subscription`` only: a secret
+        reference to the account's ``claude setup-token`` token, e.g.
+        ``"keychain:claude-max2"``. Given to Claude as
+        ``CLAUDE_CODE_OAUTH_TOKEN``, which takes precedence over the login
+        stored in the config directory. ``None`` uses that stored login.
     :param default_families: The set of model families this provider is
         the **default** for. Sourced from the entry's ``default:`` flag:
         ``true`` → every family it serves (:func:`provider_families`); a
@@ -454,6 +464,7 @@ class ProviderEntry:
     # Databricks Gemini routing is opt-in and has a separate default scope.
     native_gemini: bool = False
     config_dir: str | None = None
+    token_ref: str | None = None
 
     @property
     def default(self) -> bool:
@@ -988,6 +999,18 @@ def _parse_provider(name: str, raw: dict[str, object]) -> ProviderEntry:
                 f"supported for the {sorted(SUBSCRIPTION_CONFIG_DIR_ENV)} subscription CLIs.",
                 code=ErrorCode.INVALID_INPUT,
             )
+        token_ref_raw = raw.get("token_ref")
+        if token_ref_raw is not None and (
+            cli_raw not in SUBSCRIPTION_TOKEN_ENV
+            or not isinstance(token_ref_raw, str)
+            or not token_ref_raw.strip().startswith(("env:", "keychain:"))
+        ):
+            raise OmnigentError(
+                f"provider {name!r}: 'token_ref' must be an 'env:<VAR>' or "
+                "'keychain:<name>' reference and is only supported for the "
+                f"{sorted(SUBSCRIPTION_TOKEN_ENV)} subscription CLIs.",
+                code=ErrorCode.INVALID_INPUT,
+            )
         # claude/codex subscriptions are locked to their own CLIs and cannot
         # drive pi. A pi subscription explicitly opts into Pi's own native auth
         # and may default the pi surface (pi_capable=True, served={}).
@@ -999,6 +1022,7 @@ def _parse_provider(name: str, raw: dict[str, object]) -> ProviderEntry:
                 name, default_raw, served, pi_capable=(cli_raw == "pi")
             ),
             config_dir=config_dir_raw.strip() if isinstance(config_dir_raw, str) else None,
+            token_ref=token_ref_raw.strip() if isinstance(token_ref_raw, str) else None,
         )
 
     if kind == CLI_CONFIG_KIND:
@@ -1716,12 +1740,28 @@ def subscription_config_dir(entry: ProviderEntry) -> Path | None:
     return Path(expanded).expanduser().absolute()
 
 
+def subscription_token(entry: ProviderEntry) -> str | None:
+    """Return the account token of a subscription *entry*, if it uses one.
+
+    :param entry: Any provider entry.
+    :returns: The resolved ``token_ref`` secret, or ``None`` when the entry
+        carries none.
+    :raises OmnigentError: If the referenced secret is not set.
+    """
+    if entry.kind != SUBSCRIPTION_KIND or entry.token_ref is None:
+        return None
+    return resolve_secret(entry.token_ref)
+
+
 def subscription_source_descriptor(entry: ProviderEntry) -> str:
-    """Describe where a subscription's login lives, for readouts and labels.
+    """Describe where a subscription's credential lives, for readouts.
 
     :param entry: A ``subscription`` provider entry.
-    :returns: e.g. ``"claude CLI login"`` or ``"claude CLI login (~/.claude-max2)"``.
+    :returns: e.g. ``"claude CLI login"``, ``"claude CLI login (~/.claude-max2)"``,
+        or ``"claude account token (keychain:claude-max2)"``.
     """
+    if entry.token_ref:
+        return f"{entry.cli} account token ({entry.token_ref})"
     if entry.config_dir:
         return f"{entry.cli} CLI login ({entry.config_dir})"
     return f"{entry.cli} CLI login"

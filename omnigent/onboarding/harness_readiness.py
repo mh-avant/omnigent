@@ -592,10 +592,10 @@ def _claude_token_env_configured() -> bool:
 
 
 def _default_subscription_account(harness: str) -> ProviderEntry | None:
-    """Return *harness*'s default provider when it is a subscription with its own login dir.
+    """Return *harness*'s default provider when it is a subscription with its own login.
 
-    Such an account's login lives in its ``config_dir``, not the CLI's default
-    location, so readiness must check it there. Never raises.
+    Such an account's login lives in its ``config_dir`` or its token, not the
+    CLI's default location, so readiness must check it there. Never raises.
 
     :param harness: A canonical harness spelling, e.g. ``"claude-native"``.
     :returns: The subscription entry, or ``None``.
@@ -604,7 +604,9 @@ def _default_subscription_account(harness: str) -> ProviderEntry | None:
         provider = default_provider_for_harness(load_config(), harness)
     except Exception:
         return None
-    if provider is None or provider.kind != SUBSCRIPTION_KIND or provider.config_dir is None:
+    if provider is None or provider.kind != SUBSCRIPTION_KIND:
+        return None
+    if provider.config_dir is None and provider.token_ref is None:
         return None
     return provider
 

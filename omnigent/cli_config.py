@@ -624,6 +624,7 @@ def _configure_harness_add(family: str | None = None) -> str | None:
         RESPONSES_WIRE_API,
         SUBSCRIPTION_CONFIG_DIR_ENV,
         SUBSCRIPTION_KIND,
+        SUBSCRIPTION_TOKEN_ENV,
         load_providers,
         provider_entry_settings,
         set_default_provider,
@@ -831,12 +832,18 @@ def _configure_harness_add(family: str | None = None) -> str | None:
         existing_subs = [
             n
             for n, e in load_providers(_load_global_config()).items()
-            if e.kind == SUBSCRIPTION_KIND and e.cli == cli_name and e.config_dir is None
+            if e.kind == SUBSCRIPTION_KIND
+            and e.cli == cli_name
+            and e.config_dir is None
+            and e.token_ref is None
         ]
         account_name = ""
         account_dir: str | None = None
+        account_token_ref: str | None = None
         if existing_subs:
             choices = ["Replace it", "Keep the current one"]
+            if cli_name in SUBSCRIPTION_TOKEN_ENV:
+                choices.append("Add another account (token, shares sessions)")
             if cli_name in SUBSCRIPTION_CONFIG_DIR_ENV:
                 choices.append("Add another account (own login directory)")
             picked = select(
@@ -854,17 +861,29 @@ def _configure_harness_add(family: str | None = None) -> str | None:
                     return None
                 if account_name in load_providers(_load_global_config()):
                     return f"✗ A provider named {account_name!r} already exists"
-                account_dir = prompt_text(
-                    "Login directory for this account", default=f"~/.{account_name}"
-                ).strip()
-                if not account_dir:
-                    return None
+                if "token" in action:
+                    console.print(
+                        f"  [dim]In another terminal, run `{cli_name} setup-token`, sign in "
+                        "as this account, and paste the token it prints.[/dim]"
+                    )
+                    token = prompt_text("Account token", hide_input=True).strip()
+                    if not token:
+                        return None
+                    secret_store.store_secret(account_name, token)
+                    account_token_ref = f"keychain:{account_name}"
+                else:
+                    account_dir = prompt_text(
+                        "Login directory for this account", default=f"~/.{account_name}"
+                    ).strip()
+                    if not account_dir:
+                        return None
                 existing_subs = []
             elif action != "Replace it":  # "Keep the current one" or Esc — abort the add
                 return None
         # CLIs listed in _CLI_LOGIN_BRAND (claude / codex) require a login step.
         # CLIs not listed (pi) manage their own auth — no login step needed.
-        if cli_name in _CLI_LOGIN_BRAND:
+        # A token account authenticates with its token; it has no login to drive.
+        if cli_name in _CLI_LOGIN_BRAND and account_token_ref is None:
             from omnigent.onboarding.harness_install import harness_install_spec, harness_login
 
             login_family = {agent: fam for fam, agent in _FAMILY_UCODE_AGENT.items()}.get(cli_name)
@@ -893,8 +912,10 @@ def _configure_harness_add(family: str | None = None) -> str | None:
                 remaining = {k: v for k, v in block.items() if k not in existing_subs}
                 _save_global_config({"providers": remaining})
         # The default-login subscription's name is derived from the CLI.
-        name = account_name if account_dir is not None else f"{cli_name}-subscription"
-        entry = build_subscription_provider_entry(cli_name, account_dir)
+        name = account_name or f"{cli_name}-subscription"
+        entry = build_subscription_provider_entry(
+            cli_name, account_dir, token_ref=account_token_ref
+        )
 
     elif kind == "gateway":
         gemini_gateway = family == GEMINI_FAMILY
@@ -3287,6 +3308,8 @@ def _remove_subscription(provider: str, family: str) -> str | None:
     from omnigent.onboarding.subscription_accounts import subscription_home_env
 
     entry = load_providers(_load_global_config()).get(provider)
+    if entry is not None and entry.token_ref is not None:
+        return _remove_token_account(provider, entry.token_ref, disp)
     account_env = subscription_home_env(entry) if entry is not None else {}
     if account_env:
         logout_cmd = " ".join([*(f"{k}={v}" for k, v in account_env.items()), logout_cmd])
@@ -3313,6 +3336,42 @@ def _remove_subscription(provider: str, family: str) -> str | None:
         f"✓ Removed {disp} subscription — note: `{logout_cmd}` did not complete, "
         f"so you may still be signed in to the {disp} CLI"
     )
+
+
+def _remove_token_account(provider: str, token_ref: str, disp: str) -> str | None:
+    """Remove a subscription account that signs in with a stored token.
+
+    Token accounts share the CLI's default login directory, so this never runs
+    the CLI's logout; it deletes the stored token and drops our entry.
+
+    :param provider: The provider id, e.g. ``"claude-max2"``.
+    :param token_ref: The account's token reference, e.g. ``"keychain:claude-max2"``.
+    :param disp: The harness display name, e.g. ``"Claude Code"``.
+    :returns: A confirmation message, or ``None`` when the user declined.
+    """
+    from omnigent.onboarding import secrets as secret_store
+    from omnigent.onboarding.interactive import select
+
+    stored = token_ref.startswith("keychain:")
+    choice = select(
+        f"Remove {disp} account {provider!r}?",
+        ["Yes — remove it", "No — keep it"],
+        descriptions=[
+            "Deletes its stored token and removes it here. Your other "
+            f"{disp} logins are untouched."
+            if stored
+            else f"Removes it here. Its token in {token_ref} is left as is.",
+            "Leave the account untouched.",
+        ],
+        default=1,
+        clear_on_exit=True,
+    )
+    if choice != 0:
+        return None
+    if stored:
+        secret_store.delete_secret(token_ref[len("keychain:") :])
+    _remove_credential(provider)
+    return f"✓ Removed {disp} account {provider!r}"
 
 
 def _remove_databricks_provider(provider: str) -> str:

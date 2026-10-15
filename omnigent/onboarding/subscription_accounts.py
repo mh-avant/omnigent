@@ -27,6 +27,7 @@ from omnigent.onboarding.provider_config import (
     SESSION_PROVIDER_ENV,
     SUBSCRIPTION_CONFIG_DIR_ENV,
     SUBSCRIPTION_KIND,
+    SUBSCRIPTION_TOKEN_ENV,
     ProviderEntry,
     default_provider_for_harness,
     harness_family,
@@ -35,7 +36,7 @@ from omnigent.onboarding.provider_config import (
     provider_families,
     session_provider,
     subscription_config_dir,
-    subscription_source_descriptor,
+    subscription_token,
 )
 
 _logger = logging.getLogger(__name__)
@@ -57,6 +58,52 @@ def subscription_home_env(entry: ProviderEntry) -> dict[str, str]:
     if path is None or var is None:
         return {}
     return {var: str(path)}
+
+
+def subscription_token_env(entry: ProviderEntry) -> dict[str, str]:
+    """Return the env var that hands *entry*'s account token to its CLI.
+
+    :param entry: Any provider entry.
+    :returns: e.g. ``{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-..."}``; empty
+        when the entry is not a subscription with a ``token_ref``.
+    :raises OmnigentError: ``harness_not_configured`` when the token is not set.
+    """
+    var = SUBSCRIPTION_TOKEN_ENV.get(entry.cli or "")
+    if var is None:
+        return {}
+    try:
+        token = subscription_token(entry)
+    except OmnigentError as exc:
+        raise OmnigentError(
+            f"Subscription account {entry.name!r} has no token: {exc.message} "
+            f"Create one with `{entry.cli} setup-token`.",
+            code=ErrorCode.HARNESS_NOT_CONFIGURED,
+        ) from exc
+    return {var: token} if token else {}
+
+
+def claude_account_env(pinned: str | None = None) -> dict[str, str]:
+    """Return the token env for the Claude account this process runs on.
+
+    The account is the agent's pinned provider, else the session's choice or
+    the host default (see
+    :func:`~omnigent.onboarding.provider_config.get_default_provider`).
+
+    :param pinned: The provider an agent spec pins via ``executor.auth``, if any.
+    :returns: e.g. ``{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-..."}``; empty
+        for an account that uses its stored login.
+    :raises OmnigentError: ``harness_not_configured`` when the account's token
+        is not set.
+    """
+    config = load_config()
+    entry = (
+        load_providers(config).get(pinned)
+        if pinned
+        else default_provider_for_harness(config, "claude-sdk")
+    )
+    if entry is None or entry.kind != SUBSCRIPTION_KIND or entry.cli != "claude":
+        return {}
+    return subscription_token_env(entry)
 
 
 def _default_login_dir(cli: str, env: Mapping[str, str]) -> Path:
@@ -84,9 +131,13 @@ def subscription_login_command(entry: ProviderEntry) -> str:
     """Return the shell command that signs *entry*'s account in.
 
     :param entry: A ``claude`` / ``codex`` subscription entry.
-    :returns: e.g. ``"CLAUDE_CONFIG_DIR=/home/u/.claude-max2 claude auth login --claudeai"``.
+    :returns: e.g. ``"CLAUDE_CONFIG_DIR=/home/u/.claude-max2 claude auth login --claudeai"``,
+        or ``"claude setup-token"`` for a token account.
     """
     from omnigent.onboarding.harness_install import harness_install_spec
+
+    if entry.token_ref is not None:
+        return shlex.join([str(entry.cli), "setup-token"])
 
     spec = harness_install_spec(_CLI_FAMILY[str(entry.cli)])
     argv = [str(entry.cli), *(spec.login_args or ())] if spec is not None else [str(entry.cli)]
@@ -106,6 +157,11 @@ def subscription_logged_in(entry: ProviderEntry) -> bool:
     """
     from omnigent.onboarding.ambient import claude_auth_has_credential, codex_auth_has_credential
 
+    if entry.token_ref is not None:
+        try:
+            return bool(subscription_token(entry))
+        except OmnigentError:
+            return False
     try:
         directory = subscription_login_dir(entry)
     except OmnigentError:
@@ -135,6 +191,13 @@ def require_subscription_login(entry: ProviderEntry) -> None:
         return
     if subscription_logged_in(entry):
         return
+    if entry.token_ref is not None:
+        raise OmnigentError(
+            f"Subscription account {entry.name!r} has no token stored as "
+            f"{entry.token_ref!r}. Create one with `{subscription_login_command(entry)}` "
+            "and add it with `omnigent setup`.",
+            code=ErrorCode.INVALID_INPUT,
+        )
     raise OmnigentError(
         f"Subscription account {entry.name!r} is not logged in "
         f"(login directory {subscription_login_dir(entry)}). "
@@ -165,22 +228,35 @@ def require_subscription_dir_active(entry: ProviderEntry, active_dir: Path) -> N
     )
 
 
-def require_session_account_dir(cli: str, launch_dir: Path) -> None:
+def require_session_account_dir(
+    cli: str, launch_dir: Path, launch_env: Mapping[str, str] | None = None
+) -> None:
     """Fail when the session's *cli* account is not the login its CLI starts with.
 
     The host points the runner at the account the session chose, but an agent
     spec's ``env`` or the host's harness startup command can still move the
-    CLI to another login directory.
+    CLI to another login directory or replace the account's token.
 
     :param cli: The subscription CLI, e.g. ``"claude"``.
     :param launch_dir: The login directory the CLI process would use, e.g.
         ``Path("/srv/claude")``.
+    :param launch_env: The environment the CLI process starts with, used to
+        check a token account's token. ``None`` skips that check.
     :raises OmnigentError: ``harness_not_configured`` when the session chose a
-        *cli* subscription account whose login directory differs.
+        *cli* subscription account whose login directory or token differs.
     """
     entry = session_provider(load_config())
     if entry is None or entry.kind != SUBSCRIPTION_KIND or entry.cli != cli:
         return
+    token_env = subscription_token_env(entry)
+    if launch_env is not None and any(launch_env.get(k) != v for k, v in token_env.items()):
+        var = SUBSCRIPTION_TOKEN_ENV[cli]
+        raise OmnigentError(
+            f"This session runs on account {entry.name!r}, but the agent's env or this "
+            f"host's {cli} startup command sets a different {var}. Remove that setting, "
+            "or start the session on the account that token belongs to.",
+            code=ErrorCode.HARNESS_NOT_CONFIGURED,
+        )
     expected = subscription_login_dir(entry)
     if os.path.realpath(expected) == os.path.realpath(launch_dir):
         return
@@ -255,13 +331,15 @@ def default_accounts_env(config: dict[str, object]) -> dict[str, str]:
 
 
 def apply_default_account_env(harness: str, env: MutableMapping[str, str] | None = None) -> None:
-    """Point this process at the default account's login directory for *harness*.
+    """Point this process at the default account's login for *harness*.
 
     For single-session CLI entry points (``omnigent claude`` / ``omnigent
     codex``), whose children inherit the process environment.
 
     :param harness: ``"claude-native"`` or ``"codex-native"``.
     :param env: The environment to update; defaults to ``os.environ``.
+    :raises OmnigentError: ``harness_not_configured`` when the default account
+        is a token account whose token is not set.
     """
     target = os.environ if env is None else env
     try:
@@ -270,12 +348,15 @@ def apply_default_account_env(harness: str, env: MutableMapping[str, str] | None
         return
     if entry is not None:
         target.update(subscription_home_env(entry))
+        target.update(subscription_token_env(entry))
 
 
 def _provider_label(entry: ProviderEntry, family: str) -> str:
     """Describe *entry* for a picker without resolving or revealing credentials."""
     if entry.kind == SUBSCRIPTION_KIND:
-        return subscription_source_descriptor(entry)
+        if entry.token_ref is not None:
+            return f"{entry.cli} account token"
+        return f"{entry.cli} login (own directory)" if entry.config_dir else f"{entry.cli} login"
     if entry.kind == DATABRICKS_KIND:
         return f"Databricks profile {entry.profile}" if entry.profile else "Databricks"
     if entry.kind == CLI_CONFIG_KIND:

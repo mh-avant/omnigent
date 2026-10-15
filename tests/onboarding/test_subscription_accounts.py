@@ -21,6 +21,7 @@ from omnigent.onboarding.provider_config import (
 )
 from omnigent.onboarding.subscription_accounts import (
     apply_default_account_env,
+    claude_account_env,
     default_accounts_env,
     provider_choices,
     require_session_account_dir,
@@ -30,6 +31,7 @@ from omnigent.onboarding.subscription_accounts import (
     subscription_home_env,
     subscription_logged_in,
     subscription_login_command,
+    subscription_token_env,
 )
 
 
@@ -340,6 +342,81 @@ def test_session_account_must_be_the_login_the_cli_starts_with(
     require_session_account_dir("claude", tmp_path / "elsewhere")
 
 
+def _token_config() -> dict[str, object]:
+    return _providers(
+        max1={"kind": "subscription", "cli": "claude", "default": True},
+        max2={"kind": "subscription", "cli": "claude", "token_ref": "env:MAX2_TOKEN"},
+    )
+
+
+@pytest.mark.parametrize(
+    "cli,token_ref",
+    [("codex", "env:CODEX_TOKEN"), ("claude", "sk-ant-oat01-literal"), ("claude", 3)],
+)
+def test_token_ref_rejected_when_unsupported_or_inline(cli: str, token_ref: object) -> None:
+    with pytest.raises(OmnigentError, match="'token_ref' must be"):
+        load_providers(_providers(a={"kind": "subscription", "cli": cli, "token_ref": token_ref}))
+
+
+def test_token_account_signs_in_with_its_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = load_providers(_token_config())["max2"]
+    monkeypatch.delenv("MAX2_TOKEN", raising=False)
+
+    assert not subscription_logged_in(entry)
+    assert subscription_login_command(entry) == "claude setup-token"
+    with pytest.raises(OmnigentError, match="no token stored as 'env:MAX2_TOKEN'"):
+        require_subscription_login(entry)
+
+    monkeypatch.setenv("MAX2_TOKEN", "sk-ant-oat01-max2")
+    assert subscription_logged_in(entry)
+    assert subscription_token_env(entry) == {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-max2"}
+    # A token account shares the default login directory, so it sets none.
+    assert subscription_home_env(entry) == {}
+    row = next(
+        r for r in provider_choices(_token_config(), "claude-native") if r["name"] == "max2"
+    )
+    assert row["label"] == "claude account token"
+    assert row["ready"] is True
+    assert "sk-ant-oat01" not in json.dumps(row)
+
+
+def test_claude_account_env_follows_the_pin_then_the_session(
+    config_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_config(config_home, _token_config())
+    monkeypatch.setenv("MAX2_TOKEN", "sk-ant-oat01-max2")
+    token_env = {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-max2"}
+
+    # The default account uses its stored login.
+    assert claude_account_env() == {}
+    assert claude_account_env("max2") == token_env
+
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "max2")
+    assert claude_account_env() == token_env
+    # An agent pinning the stored-login account keeps it.
+    assert claude_account_env("max1") == {}
+
+    monkeypatch.delenv("MAX2_TOKEN")
+    with pytest.raises(OmnigentError, match="setup-token") as failure:
+        claude_account_env()
+    assert failure.value.code == ErrorCode.HARNESS_NOT_CONFIGURED
+
+
+def test_session_token_account_must_reach_the_cli(
+    config_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_config(config_home, _token_config())
+    monkeypatch.setenv("MAX2_TOKEN", "sk-ant-oat01-max2")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "shared"))
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "max2")
+    shared = tmp_path / "shared"
+
+    require_session_account_dir("claude", shared, {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-max2"})
+    for launch_env in ({}, {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-other"}):
+        with pytest.raises(OmnigentError, match="sets a different CLAUDE_CODE_OAUTH_TOKEN"):
+            require_session_account_dir("claude", shared, launch_env)
+
+
 def test_provider_choices_list_family_providers_without_secrets(tmp_path: Path) -> None:
     _write_claude_login(tmp_path / "m1")
 
@@ -349,14 +426,14 @@ def test_provider_choices_list_family_providers_without_secrets(tmp_path: Path) 
         {
             "name": "max1",
             "kind": "subscription",
-            "label": f"claude CLI login ({tmp_path / 'm1'})",
+            "label": "claude login (own directory)",
             "default": True,
             "ready": True,
         },
         {
             "name": "max2",
             "kind": "subscription",
-            "label": f"claude CLI login ({tmp_path / 'm2'})",
+            "label": "claude login (own directory)",
             "default": False,
             "ready": False,
         },
@@ -376,6 +453,8 @@ def test_provider_choices_list_family_providers_without_secrets(tmp_path: Path) 
         },
     ]
     assert "sk-literal" not in json.dumps(rows)
+    # Picker labels never name the host's login directories.
+    assert str(tmp_path) not in json.dumps(rows)
     assert provider_choices(_session_config(tmp_path), "cursor") == []
 
 

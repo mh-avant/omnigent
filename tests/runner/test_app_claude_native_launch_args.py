@@ -1216,6 +1216,69 @@ async def test_auto_create_claude_terminal_keeps_the_session_account(
         registry.launch_required_terminal.assert_not_called()
 
 
+@pytest.mark.parametrize("wrapper_token", [None, "sk-ant-oat01-other"])
+async def test_auto_create_claude_terminal_hands_claude_the_account_token(
+    bridge_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper_token: str | None,
+) -> None:
+    """
+    A session on a token account starts Claude with that account's token.
+
+    Token accounts share one login directory, so the token is what selects the
+    account; a startup command that replaces it fails before seeding.
+
+    :param wrapper_token: Token an ``env`` startup wrapper sets, or ``None``.
+    """
+    from unittest.mock import Mock
+
+    from omnigent.errors import ErrorCode, OmnigentError
+    from omnigent.onboarding.provider_config import SESSION_PROVIDER_ENV
+    from omnigent.runner.resource_registry import SessionResourceRegistry
+
+    account = {"kind": "subscription", "cli": "claude", "token_ref": "env:MAX2_TOKEN"}
+    config = {"providers": {"max2": account}}
+    seeded: list[dict[str, str] | None] = []
+    registry = Mock(spec=SessionResourceRegistry)
+    registry.launch_required_terminal.side_effect = RuntimeError("stop after seeding")
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "max2")
+    monkeypatch.setenv("MAX2_TOKEN", "sk-ant-oat01-max2")
+    monkeypatch.setattr("omnigent.onboarding.provider_config.load_config", lambda: config)
+    monkeypatch.setattr("omnigent.onboarding.subscription_accounts.load_config", lambda: config)
+    monkeypatch.setattr(
+        "omnigent.harnesses.claude_native.bridge.ensure_claude_workspace_trusted",
+        lambda workspace, env=None: seeded.append(env),
+    )
+    if wrapper_token is not None:
+        monkeypatch.setattr(
+            "omnigent.harness_startup_config.resolve_harness_command", lambda *_a, **_k: "env"
+        )
+        monkeypatch.setattr(
+            "omnigent.harness_startup_config.resolve_harness_args",
+            lambda _harness, cli_args, cfg=None: [
+                f"CLAUDE_CODE_OAUTH_TOKEN={wrapper_token}",
+                "claude",
+                *cli_args,
+            ],
+        )
+
+    expected = RuntimeError if wrapper_token is None else OmnigentError
+    with pytest.raises(expected) as failure:
+        await _auto_create_claude_terminal_for_test(
+            monkeypatch, session_id="conv_token_account", workspace=bridge_dir, registry=registry
+        )
+
+    if wrapper_token is None:
+        assert len(seeded) == 1
+        assert seeded[0] is not None
+        assert seeded[0]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-max2"
+    else:
+        assert isinstance(failure.value, OmnigentError)
+        assert failure.value.code == ErrorCode.HARNESS_NOT_CONFIGURED
+        assert "sk-ant-oat01" not in failure.value.message
+        assert seeded == []
+
+
 @pytest.mark.parametrize(
     "subagent_started,turn_started",
     [(True, True), (True, False), (False, True), (False, False)],

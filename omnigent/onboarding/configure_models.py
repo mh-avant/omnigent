@@ -914,7 +914,7 @@ def default_base_url_for_family(family: str) -> str:
 
 
 def build_subscription_provider_entry(
-    cli: str, config_dir: str | None = None
+    cli: str, config_dir: str | None = None, *, token_ref: str | None = None
 ) -> dict[str, object]:
     """Build a ``kind: subscription`` provider entry body.
 
@@ -922,12 +922,16 @@ def build_subscription_provider_entry(
         ``"codex"``.
     :param config_dir: The account's own login directory, e.g.
         ``"~/.claude-max2"``; ``None`` uses the CLI's default login.
+    :param token_ref: The account token's secret reference, e.g.
+        ``"keychain:claude-max2"``; ``None`` uses the stored login.
     :returns: A provider entry body, e.g.
         ``{"kind": "subscription", "cli": "claude"}``.
     """
     entry: dict[str, object] = {"kind": SUBSCRIPTION_KIND, "cli": cli}
     if config_dir:
         entry["config_dir"] = config_dir
+    if token_ref:
+        entry["token_ref"] = token_ref
     return entry
 
 
