@@ -2823,11 +2823,14 @@ function AppShellImpl() {
           <Toaster
             position="top-center"
             visibleToasts={100}
+            // Top toasts start below the iOS status bar / Dynamic Island.
             offset={{
+              top: "calc(24px + var(--omnigent-inset-top))",
               right: "1rem",
               bottom: updateOverlayToastOffset(updateOverlayHeight),
             }}
             mobileOffset={{
+              top: "calc(16px + var(--omnigent-inset-top))",
               right: "1rem",
               bottom: updateOverlayToastOffset(updateOverlayHeight),
             }}
