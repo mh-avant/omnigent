@@ -27,6 +27,8 @@ reattach when the session moves to another host.
   chat or composer.
 - `dialog-routing`: when the harness is waiting on a dialog in its terminal, chat
   says so and routes the user to the terminal.
+- `touch-keys`: on touch devices an extra-keys row (Esc, Tab, arrows, sticky
+  Ctrl/Alt/Shift) under the terminal sends keys a soft keyboard can't.
 
 ## How to get to it (user POV)
 
@@ -108,6 +110,11 @@ verify-env run -- python -m pytest <test> --ui-skip-build --video=on \
 - **`scrollback`, keyboard:** no e2e coverage. In a Codex terminal with more
   output than fits, press Page Up and expect older output; then check that the
   Codex terminal's other keys still behave as before.
+- **`touch-keys`:**
+  `tests/e2e_ui/terminal/test_extra_keys.py::test_extra_keys_row_shows_on_touch_at_phone_and_tablet_widths`,
+  `tests/e2e_ui/terminal/test_extra_keys.py::test_extra_keys_row_absent_on_fine_pointer`,
+  `tests/e2e_ui/terminal/test_extra_keys.py::test_extra_keys_send_the_expected_bytes`,
+  `tests/e2e_ui/terminal/test_extra_keys.py::test_extra_keys_keep_focus_and_scrollback`
 - **`reconnect`:**
   `tests/e2e_ui/shells/test_terminal_bridge_reconnect.py::test_embedded_terminal_reconnects_after_transport_close`
 - **`host-switch-reattach`:**
