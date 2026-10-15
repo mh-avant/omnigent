@@ -7,6 +7,7 @@
 // open the right way — so we pin it here.
 
 import { Terminal } from "@xterm/xterm";
+import { TOUCH_SELECT_LONG_PRESS_MS } from "./terminalTouchSelection";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SHIFT_ENTER_CSI_U,
@@ -1002,6 +1003,74 @@ describe("TerminalSession", () => {
     touchEvent("touchmove", [{ clientX: 160, clientY: 110 }]);
     touchEvent("touchmove", [{ clientX: 160, clientY: 200 }]);
     expect(scrollSpy).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it("selects a word on long-press without scrolling or sending a tap to the program", async () => {
+    // WHY: xterm only selects with a mouse. The long-press must select through
+    // xterm, own the rest of the gesture, and cancel the touchend so iOS never
+    // turns it into a click that reaches the pane program as a mouse report.
+    const { session, container } = makeSession();
+    (session as unknown as { screenMetrics: () => WheelScreenMetrics }).screenMetrics = () => ({
+      left: 0,
+      top: 0,
+      cellWidth: 8,
+      cellHeight: 16,
+      cols: 80,
+      rows: 24,
+    });
+    const term = (session as unknown as { term: Terminal }).term;
+    await new Promise<void>((resolve) => {
+      term.write("git status", resolve);
+    });
+    const scrollSpy = vi.spyOn(term, "scrollLines");
+    const touchEvent = (type: string, points: { clientX: number; clientY: number }[]) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "touches", { value: points });
+      container.dispatchEvent(ev);
+      return ev;
+    };
+    vi.useFakeTimers();
+    try {
+      // Hold on "status" (cells 4-9) past the long-press delay.
+      touchEvent("touchstart", [{ clientX: 50, clientY: 8 }]);
+      vi.advanceTimersByTime(TOUCH_SELECT_LONG_PRESS_MS);
+      expect(term.getSelection()).toBe("status");
+
+      // The same finger now extends the selection instead of scrolling.
+      const move = touchEvent("touchmove", [{ clientX: 0, clientY: 12 }]);
+      expect(move.defaultPrevented).toBe(true);
+      expect(scrollSpy).not.toHaveBeenCalled();
+      expect(term.getSelection()).toBe("git status");
+      expect(touchEvent("touchend", []).defaultPrevented).toBe(true);
+      expect(session.touchSelection.isActive).toBe(true);
+
+      // A plain tap dismisses the selection and is left to the browser.
+      touchEvent("touchstart", [{ clientX: 50, clientY: 8 }]);
+      expect(touchEvent("touchend", []).defaultPrevented).toBe(false);
+      expect(term.hasSelection()).toBe(false);
+
+      // A scroll that starts before the delay never turns into a selection.
+      touchEvent("touchstart", [{ clientX: 50, clientY: 8 }]);
+      touchEvent("touchmove", [{ clientX: 50, clientY: 80 }]);
+      vi.advanceTimersByTime(TOUCH_SELECT_LONG_PRESS_MS);
+      touchEvent("touchend", []);
+      expect(term.hasSelection()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      session.dispose();
+    }
+  });
+
+  it("pastes through xterm so bracketed paste applies", () => {
+    const { session, socket } = makeSession();
+    const term = (session as unknown as { term: Terminal }).term;
+    const pasteSpy = vi.spyOn(term, "paste");
+    socket.open();
+
+    session.paste("echo hi\n");
+
+    expect(pasteSpy).toHaveBeenCalledWith("echo hi\n");
     session.dispose();
   });
 

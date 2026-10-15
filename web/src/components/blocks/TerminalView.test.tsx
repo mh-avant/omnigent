@@ -23,6 +23,7 @@ import {
   writeTerminalClipboardPreference,
 } from "@/lib/terminalClipboardPreferences";
 import type { ConnectionState } from "./TerminalSession";
+import type { TouchSelectionSnapshot } from "./terminalTouchSelection";
 import { LONG_PRESS_MS } from "./terminalExtraKeysModel";
 import {
   TerminalView,
@@ -84,8 +85,22 @@ const terminalSessionMock = vi.hoisted(() => ({
     focus: ReturnType<typeof vi.fn>;
     sendInput: ReturnType<typeof vi.fn>;
     setInputTransform: ReturnType<typeof vi.fn>;
+    paste: ReturnType<typeof vi.fn>;
+    touchSelection: FakeTouchSelection;
   }[],
 }));
+
+/** The session's long-press selection, reduced to what the view calls. */
+interface FakeTouchSelection {
+  listener: ((snapshot: TouchSelectionSnapshot | null) => void) | null;
+  setListener: (fn: ((snapshot: TouchSelectionSnapshot | null) => void) | null) => void;
+  selectionText: ReturnType<typeof vi.fn>;
+  clear: ReturnType<typeof vi.fn>;
+  selectScreen: ReturnType<typeof vi.fn>;
+  beginHandleDrag: ReturnType<typeof vi.fn>;
+  dragHandle: ReturnType<typeof vi.fn>;
+  endHandleDrag: ReturnType<typeof vi.fn>;
+}
 
 vi.mock("./TerminalSession", async (importOriginal) => ({
   // Keep the real module (isUnexpectedTerminalClose and friends) —
@@ -99,6 +114,19 @@ vi.mock("./TerminalSession", async (importOriginal) => ({
     sendInput = vi.fn();
     setInputTransform = vi.fn();
     applicationCursorKeys = () => false;
+    paste = vi.fn();
+    touchSelection: FakeTouchSelection = {
+      listener: null,
+      setListener(fn) {
+        this.listener = fn;
+      },
+      selectionText: vi.fn(() => "selected words"),
+      clear: vi.fn(),
+      selectScreen: vi.fn(),
+      beginHandleDrag: vi.fn(),
+      dragHandle: vi.fn(),
+      endHandleDrag: vi.fn(),
+    };
 
     constructor(
       container: HTMLDivElement,
@@ -127,6 +155,8 @@ vi.mock("./TerminalSession", async (importOriginal) => ({
         focus: this.focus,
         sendInput: this.sendInput,
         setInputTransform: this.setInputTransform,
+        paste: this.paste,
+        touchSelection: this.touchSelection,
       });
     }
   },
@@ -360,6 +390,133 @@ describe("control-mode terminal", () => {
       terminalSessionMock.instances[0].onFileLink?.("file:///home/u/ws/src/app.ts#L42-L50"),
     ).toBe(true);
     expect(openFile).toHaveBeenCalledWith("src/app.ts", { line: 42 });
+  });
+});
+
+describe("touch selection menu", () => {
+  const selected: TouchSelectionSnapshot = {
+    start: { x: 40, y: 60 },
+    end: { x: 120, y: 60 },
+    top: 40,
+    bottom: 60,
+    cellHeight: 20,
+    hasSelection: true,
+    dragging: false,
+  };
+
+  async function renderSelectingView(readOnly = false) {
+    render(<TerminalView sessionId="conv_abc" terminalId="terminal_bash_s1" readOnly={readOnly} />);
+    await waitFor(() => expect(terminalSessionMock.instances).toHaveLength(1));
+    const terminal = terminalSessionMock.instances[0];
+    act(() => terminal.onState({ kind: "connected" }));
+    expect(terminal.touchSelection.listener).toBeTypeOf("function");
+    return terminal;
+  }
+
+  function showSelection(
+    terminal: (typeof terminalSessionMock.instances)[number],
+    snap = selected,
+  ) {
+    act(() => terminal.touchSelection.listener!(snap));
+  }
+
+  /** Tap a menu button the way a phone does: the action runs on touchend. */
+  function tapMenu(name: string) {
+    const button = within(screen.getByRole("toolbar", { name: "Terminal selection" })).getByRole(
+      "button",
+      { name },
+    );
+    const notCancelled = fireEvent.touchEnd(button);
+    // Cancelled so iOS keeps focus (and the keyboard) on the terminal.
+    expect(notCancelled).toBe(false);
+  }
+
+  it("shows handles and the menu for a selection, and hides them when it ends", async () => {
+    const terminal = await renderSelectingView();
+    expect(screen.queryByTestId("terminal-touch-selection")).toBeNull();
+
+    showSelection(terminal);
+    expect(screen.getByTestId("terminal-selection-handle-start")).toBeInTheDocument();
+    expect(screen.getByTestId("terminal-selection-handle-end")).toBeInTheDocument();
+    const menu = screen.getByRole("toolbar", { name: "Terminal selection" });
+    expect(
+      within(menu)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Copy", "Paste", "Select screen"]);
+
+    // The menu steps aside while a handle is dragged.
+    showSelection(terminal, { ...selected, dragging: true });
+    expect(screen.queryByRole("toolbar", { name: "Terminal selection" })).toBeNull();
+
+    showSelection(terminal, null as unknown as TouchSelectionSnapshot);
+    expect(screen.queryByTestId("terminal-touch-selection")).toBeNull();
+  });
+
+  it("forwards handle drags to the session in client coordinates", async () => {
+    const terminal = await renderSelectingView();
+    showSelection(terminal);
+    const handle = screen.getByTestId("terminal-selection-handle-end");
+    handle.setPointerCapture = vi.fn();
+    handle.hasPointerCapture = () => true;
+
+    fireEvent.pointerDown(handle, { pointerId: 3, isPrimary: true, clientX: 121, clientY: 70 });
+    fireEvent.pointerMove(handle, { pointerId: 3, clientX: 150, clientY: 90 });
+    fireEvent.pointerUp(handle, { pointerId: 3 });
+
+    expect(terminal.touchSelection.beginHandleDrag).toHaveBeenCalledWith("end", 121, 70);
+    expect(terminal.touchSelection.dragHandle).toHaveBeenCalledWith(150, 90);
+    expect(terminal.touchSelection.endHandleDrag).toHaveBeenCalled();
+  });
+
+  it("copies the selection through the terminal clipboard consent", async () => {
+    writeTerminalClipboardPreference("allow");
+    const terminal = await renderSelectingView();
+    showSelection(terminal);
+
+    tapMenu("Copy");
+
+    expect(terminal.touchSelection.clear).toHaveBeenCalled();
+    await waitFor(() => expect(clipboardMock.copyText).toHaveBeenCalledWith("selected words"));
+  });
+
+  it("asks for clipboard consent before the first touch copy", async () => {
+    const terminal = await renderSelectingView();
+    showSelection(terminal);
+
+    tapMenu("Copy");
+
+    await waitFor(() => expect(screen.queryByTestId("terminal-clipboard-consent")).not.toBeNull());
+    expect(clipboardMock.copyText).not.toHaveBeenCalled();
+  });
+
+  it("pastes the clipboard into the session", async () => {
+    const readText = vi.fn(async () => "npm test");
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { readText } });
+    try {
+      const terminal = await renderSelectingView();
+      showSelection(terminal, { ...selected, start: null, end: null, hasSelection: false });
+      const menu = screen.getByRole("toolbar", { name: "Terminal selection" });
+      expect(within(menu).queryByRole("button", { name: "Copy" })).toBeNull();
+
+      tapMenu("Paste");
+
+      expect(readText).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(terminal.paste).toHaveBeenCalledWith("npm test"));
+      expect(terminal.touchSelection.clear).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("selects the screen, and offers no Paste on a read-only terminal", async () => {
+    const terminal = await renderSelectingView(true);
+    showSelection(terminal);
+    const menu = screen.getByRole("toolbar", { name: "Terminal selection" });
+    expect(within(menu).queryByRole("button", { name: "Paste" })).toBeNull();
+
+    tapMenu("Select screen");
+    expect(terminal.touchSelection.selectScreen).toHaveBeenCalled();
   });
 });
 

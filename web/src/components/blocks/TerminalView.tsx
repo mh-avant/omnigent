@@ -56,6 +56,8 @@ import {
   WS_CLOSE_WRONG_REPLICA,
 } from "./TerminalSession";
 import { TerminalExtraKeys, type ExtraKeysTarget } from "./TerminalExtraKeys";
+import { TerminalTouchSelectionOverlay } from "./TerminalTouchSelectionOverlay";
+import type { TouchSelectionHandle, TouchSelectionSnapshot } from "./terminalTouchSelection";
 
 /**
  * Backoff schedule for automatic re-attach after a transport-level
@@ -291,6 +293,26 @@ export function TerminalView({
   const isDarkRef = useRef(isDark);
   isDarkRef.current = isDark;
   const sessionRef = useRef<TerminalSession | null>(null);
+  // Long-press selection (touch): the session reports client coordinates;
+  // the overlay draws in the terminal surface's local ones.
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const [touchSelection, setTouchSelection] = useState<TouchSelectionSnapshot | null>(null);
+  const handleTouchSelection = useCallback((snapshot: TouchSelectionSnapshot | null) => {
+    const origin = surfaceRef.current?.getBoundingClientRect();
+    if (snapshot === null || !origin) {
+      setTouchSelection(null);
+      return;
+    }
+    const local = (point: { x: number; y: number } | null) =>
+      point && { x: point.x - origin.left, y: point.y - origin.top };
+    setTouchSelection({
+      ...snapshot,
+      start: local(snapshot.start),
+      end: local(snapshot.end),
+      top: snapshot.top - origin.top,
+      bottom: snapshot.bottom - origin.top,
+    });
+  }, []);
   // Extra-keys row (touch devices). The row keeps its sticky-modifier rewrite
   // here so a re-dialed session inherits it; the target resolves the live
   // session at event time, so it is created once and never re-renders the row.
@@ -381,11 +403,13 @@ export function TerminalView({
   );
 
   const notifyClipboardRequest = useCallback(
-    (text: string, copyEvent?: ClipboardEvent) => {
+    // ``userSelection`` marks a copy the user asked for without a browser copy
+    // event (the touch selection menu); it is treated like a native copy.
+    (text: string, copyEvent?: ClipboardEvent, userSelection = copyEvent !== undefined) => {
       if (
         !clipboardMountedRef.current ||
         !clipboardActiveRef.current ||
-        (readOnly && !copyEvent) ||
+        (readOnly && !userSelection) ||
         clipboardScopeRef.current.scope !== clipboardScope ||
         clipboardScopeRef.current.epoch !== clipboardScopeEpoch
       ) {
@@ -405,7 +429,7 @@ export function TerminalView({
         });
         return;
       }
-      const source = copyEvent ? "selection" : "terminal";
+      const source = userSelection ? "selection" : "terminal";
       if (
         clipboardConsentRef.current.decision === "allow" &&
         copyEvent?.clipboardData &&
@@ -420,7 +444,7 @@ export function TerminalView({
       }
       if (
         clipboardConsentRef.current.decision === "allow" &&
-        (copyEvent || !clipboardNeedsClickRef.current)
+        (userSelection || !clipboardNeedsClickRef.current)
       ) {
         setClipboardPrompt(null);
         queueSessionClipboardCopy({
@@ -515,7 +539,55 @@ export function TerminalView({
   const disposeActiveSession = useCallback(() => {
     sessionRef.current?.dispose();
     sessionRef.current = null;
+    setTouchSelection(null);
   }, []);
+
+  const copyTouchSelection = useCallback(() => {
+    const selection = sessionRef.current?.touchSelection;
+    if (!selection) return;
+    const text = selection.selectionText();
+    selection.clear();
+    if (text) notifyClipboardRequest(text, undefined, true);
+  }, [notifyClipboardRequest]);
+
+  const pasteFromClipboard = useCallback(() => {
+    const session = sessionRef.current;
+    if (!session || readOnly) return;
+    session.touchSelection.clear();
+    if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+      toast.error("Pasting isn't available in this browser.");
+      return;
+    }
+    // Called inside the tap so the browser treats it as a user paste; iOS
+    // then asks for a confirming tap on its own Paste bubble.
+    navigator.clipboard.readText().then(
+      (text) => {
+        if (text && sessionRef.current === session) session.paste(text);
+      },
+      (error: unknown) => {
+        // NotAllowedError: the user dismissed the system paste prompt.
+        if (error instanceof DOMException && error.name === "NotAllowedError") return;
+        toast.error("Couldn't read the clipboard.");
+      },
+    );
+  }, [readOnly]);
+
+  const selectTerminalScreen = useCallback(() => {
+    sessionRef.current?.touchSelection.selectScreen();
+  }, []);
+  const startSelectionHandleDrag = useCallback(
+    (handle: TouchSelectionHandle, x: number, y: number) =>
+      sessionRef.current?.touchSelection.beginHandleDrag(handle, x, y),
+    [],
+  );
+  const dragSelectionHandle = useCallback(
+    (x: number, y: number) => sessionRef.current?.touchSelection.dragHandle(x, y),
+    [],
+  );
+  const endSelectionHandleDrag = useCallback(
+    () => sessionRef.current?.touchSelection.endHandleDrag(),
+    [],
+  );
 
   useLayoutEffect(() => {
     mountedRef.current = true;
@@ -621,6 +693,7 @@ export function TerminalView({
         );
         sessionRef.current = terminalSession;
         terminalSession.setInputTransform(extraKeysTransformRef.current);
+        terminalSession.touchSelection.setListener(handleTouchSelection);
         // Relay-connected with a direct URL on offer: negotiate the
         // loopback upgrade in the background. In Chrome this is what
         // raises the Local Network Access prompt; the probe socket
@@ -652,6 +725,7 @@ export function TerminalView({
       notifyInput,
       notifyClipboardRequest,
       notifyFileLink,
+      handleTouchSelection,
       disposeActiveSession,
     ],
   );
@@ -799,10 +873,25 @@ export function TerminalView({
         />
       )}
       <div
-        className="relative min-h-0 flex-1 overflow-hidden p-3"
+        ref={surfaceRef}
+        // No iOS long-press callout: the long-press selects terminal text instead.
+        className="relative min-h-0 flex-1 overflow-hidden p-3 [-webkit-touch-callout:none]"
         style={{ backgroundColor: terminalBackground }}
       >
         <div key={connectAttempt} ref={attachSession} className="h-full w-full overflow-hidden" />
+        {touchSelection !== null && state.kind === "connected" && (
+          <TerminalTouchSelectionOverlay
+            snapshot={touchSelection}
+            canPaste={!readOnly}
+            accent={isDark ? "#22d3ee" : "#0891b2"}
+            onCopy={copyTouchSelection}
+            onPaste={pasteFromClipboard}
+            onSelectScreen={selectTerminalScreen}
+            onHandleDragStart={startSelectionHandleDrag}
+            onHandleDrag={dragSelectionHandle}
+            onHandleDragEnd={endSelectionHandleDrag}
+          />
+        )}
         {state.kind !== "connected" && (
           <StatusOverlay
             state={state}
