@@ -134,6 +134,12 @@ final class WebViewModel: ObservableObject {
     return String(data: data, encoding: .utf8)
   }
 
+  /// Settle the page's pending `readClipboardText()` calls.
+  func emitClipboardText(_ text: String?) {
+    let argument = text.map(Self.javascriptString) ?? "null"
+    webView?.evaluateJavaScript("window.__omnigentNativeEmitClipboardText?.(\(argument));")
+  }
+
   /// Settle the page's pending `signOutOfServer()` calls.
   func emitSignOutResult(_ handled: Bool) {
     webView?.evaluateJavaScript("window.__omnigentNativeEmitSignOutResult?.(\(handled));")

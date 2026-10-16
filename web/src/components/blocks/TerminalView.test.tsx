@@ -509,6 +509,30 @@ describe("touch selection menu", () => {
     }
   });
 
+  it("pastes through the iOS shell's clipboard reader when it has one", async () => {
+    // WHY: the shell reads UIPasteboard itself, so the app's Paste permission
+    // applies instead of WebKit's confirm bubble on every paste.
+    const readText = vi.fn(async () => "web text");
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { readText } });
+    const readClipboardText = vi.fn(async () => "native text");
+    (window as unknown as Record<string, unknown>).omnigentNative = {
+      kind: "ios",
+      readClipboardText,
+    };
+    try {
+      const terminal = await renderSelectingView();
+      showSelection(terminal, { ...selected, start: null, end: null, hasSelection: false });
+
+      tapMenu("Paste");
+
+      await waitFor(() => expect(terminal.paste).toHaveBeenCalledWith("native text"));
+      expect(readClipboardText).toHaveBeenCalledTimes(1);
+      expect(readText).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("selects the screen, and offers no Paste on a read-only terminal", async () => {
     const terminal = await renderSelectingView(true);
     showSelection(terminal);

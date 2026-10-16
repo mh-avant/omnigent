@@ -239,6 +239,14 @@ struct OmnigentWebView: UIViewRepresentable {
         }
         signOutWaiters.clear();
       });
+      const clipboardWaiters = new Set();
+      defineEmit("__omnigentNativeEmitClipboardText", (text) => {
+        const value = typeof text === "string" ? text : null;
+        for (const resolve of clipboardWaiters) {
+          try { resolve(value); } catch {}
+        }
+        clipboardWaiters.clear();
+      });
       const insetCallbacks = new Set();
       const keyboardViewportCallbacks = new Set();
       let keyboardViewport = null;
@@ -398,6 +406,14 @@ struct OmnigentWebView: UIViewRepresentable {
           window.webkit.messageHandlers.omnigentNative.postMessage({
             method: "openServerSetup",
           });
+        },
+        readClipboardText() {
+          // Native answers with the pasteboard text, or null when it has none.
+          const pending = new Promise((resolve) => { clipboardWaiters.add(resolve); });
+          window.webkit.messageHandlers.omnigentNative.postMessage({
+            method: "readClipboardText",
+          });
+          return pending;
         },
       });
       window.webkit.messageHandlers.omnigentNative.postMessage({
@@ -1321,6 +1337,11 @@ struct OmnigentWebView: UIViewRepresentable {
         parent.requestSwitchServer(urlString)
       case "openServerSetup":
         parent.openServerSetup()
+      case "readClipboardText":
+        // hasStrings never prompts. Reading the text asks each time unless the
+        // user set Settings > Omnigent > Paste from Other Apps to Allow.
+        let pasteboard = UIPasteboard.general
+        parent.model.emitClipboardText(pasteboard.hasStrings ? pasteboard.string : nil)
       case "setViewMode":
         markWorkspaceReady()
         let mode: WebViewMode = (body["mode"] as? String) == "terminal" ? .terminal : .chat

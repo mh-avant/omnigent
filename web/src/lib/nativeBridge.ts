@@ -124,6 +124,12 @@ interface NativeShellApi {
   /** Return to the shell's "connect to server" setup page. */
   openServerSetup?: () => void;
   /**
+   * Read the system clipboard as text, or null when it holds none. The iOS
+   * shell reads it natively, so the app's paste permission applies instead of
+   * WebKit's per-paste callout. Absent on older shells.
+   */
+  readClipboardText?: () => Promise<string | null>;
+  /**
    * Drive the native Chat/Terminal bar's visibility (iOS). The web app owns
    * the truth and only ever pushes it hidden now that the switcher lives in
    * the header. Absent on older shells.
@@ -923,6 +929,24 @@ export async function switchServer(url: string): Promise<void> {
     await native.switchServer(url);
   } catch (err) {
     console.warn("[nativeBridge] native switchServer failed:", err);
+  }
+}
+
+/** Whether the native shell can read the clipboard itself. */
+export function canReadNativeClipboard(): boolean {
+  return typeof nativeApi()?.readClipboardText === "function";
+}
+
+/** Clipboard text read by the native shell; null off-shell, when empty, or on failure. */
+export async function readNativeClipboardText(): Promise<string | null> {
+  const native = nativeApi();
+  if (!native?.readClipboardText) return null;
+  try {
+    const text = await native.readClipboardText();
+    return typeof text === "string" ? text : null;
+  } catch (err) {
+    console.warn("[nativeBridge] native readClipboardText failed:", err);
+    return null;
   }
 }
 
