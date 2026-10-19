@@ -1,6 +1,7 @@
 import type { Conversation, SessionSortBy } from "@/hooks/useConversations";
 import { nativeCodingAgentForWrapper, WRAPPER_LABEL_KEY } from "@/lib/nativeCodingAgents";
 import { getOptimisticTitle } from "@/lib/optimisticTitles";
+import type { SidebarFocus, SidebarRecency } from "@/lib/sidebarFocusPreferences";
 import { PROJECT_LABEL_KEY, PINNED_LABEL_KEY } from "@/lib/sessionListCache";
 
 export const PINNED_CONVERSATION_IDS_STORAGE_KEY = "omnigent:pinned-conversation-ids";
@@ -262,6 +263,31 @@ export function dateBucket(timestamp: number, now: Date): DateBucket {
   if (at >= midnight(7)) return "in the last 7 days";
   if (at >= midnight(30)) return "in the last 30 days";
   return "earlier";
+}
+
+// Each recency window in days. Rolling rather than calendar days, so the
+// shortest window doesn't empty out just after midnight.
+const RECENCY_WINDOW_DAYS: Record<Exclude<SidebarRecency, "any">, number> = {
+  day: 1,
+  week: 7,
+  month: 30,
+};
+
+/**
+ * Whether a session passes the sidebar's "Needs me" and recency filters.
+ * "Needs me" is a pending approval or unseen agent output (`unseen` comes from
+ * the read-state store); a failure the viewer has already seen doesn't count.
+ */
+export function matchesSidebarFocus(
+  c: Conversation,
+  focus: SidebarFocus,
+  unseen: boolean,
+  now: Date,
+): boolean {
+  if (focus.needsMe && (c.pending_elicitations_count ?? 0) === 0 && !unseen) return false;
+  if (focus.recency === "any") return true;
+  const windowMs = RECENCY_WINDOW_DAYS[focus.recency] * 24 * 60 * 60 * 1000;
+  return c.updated_at * 1000 >= now.getTime() - windowMs;
 }
 
 /**

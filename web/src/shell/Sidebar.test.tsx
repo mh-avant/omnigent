@@ -2248,6 +2248,45 @@ describe("Sidebar project sections", () => {
     expect(within(recentSection).queryByText("conv_filed")).toBeNull();
   });
 
+  it("Needs me keeps approvals and unread replies and hides folders with neither", () => {
+    projectsMock.push("Customer X", "Quiet", "Empty");
+    seedReadState([
+      { id: "conv_unread", viewer_last_seen: 199 },
+      { id: "conv_unread_filed", viewer_last_seen: 199 },
+      { id: "conv_read", viewer_last_seen: 200 },
+      { id: "conv_read_filed", viewer_last_seen: 200 },
+      { id: "conv_waiting", viewer_last_seen: 200 },
+    ]);
+    const row = (id: string, partial: Partial<Conversation> = {}) =>
+      conv(id, "Codex", { status: "idle", updated_at: 200, ...partial });
+    mockConversations([
+      row("conv_unread"),
+      row("conv_read"),
+      row("conv_waiting", { pending_elicitations_count: 1 }),
+      row("conv_unread_filed", { labels: { omni_project: "Customer X" } }),
+      row("conv_read_filed", { labels: { omni_project: "Quiet" } }),
+    ]);
+    renderSidebar();
+    expect(screen.getByRole("button", { name: /^Empty/ })).toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByTestId("session-filter"), { button: 0, ctrlKey: false });
+    fireEvent.click(screen.getByTestId("session-focus-needs-me"));
+    closeProjectsMenu();
+
+    const sessions = screen.getByText("Sessions").closest("section")!;
+    expect(within(sessions).getByText("conv_unread")).toBeInTheDocument();
+    expect(within(sessions).getByText("conv_waiting")).toBeInTheDocument();
+    expect(within(sessions).queryByText("conv_read")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Customer X/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Quiet/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Empty/ })).toBeNull();
+    expect(screen.getByTestId("session-filter")).toHaveAttribute("data-focus-active", "true");
+    expect(JSON.parse(localStorage.getItem("omnigent:sidebar-focus")!)).toEqual({
+      needsMe: true,
+      recency: "any",
+    });
+  });
+
   it("fills a folder from its own fetch, independent of the global list window", async () => {
     projectsMock.push("Customer X");
     // The global list holds only an unfiled chat — the project's sessions are

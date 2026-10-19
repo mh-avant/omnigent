@@ -11,6 +11,7 @@ import {
   getConversationIconKind,
   groupConversations,
   getConversationAgentType,
+  matchesSidebarFocus,
   migratePinnedConversationIds,
   orderByPinnedTimestamp,
   pinOrderWrites,
@@ -708,6 +709,56 @@ describe("dateBucket", () => {
     expect(dateBucket(at(new Date(2026, 8, 22, 23, 59)), now)).toBe("in the last 30 days");
     expect(dateBucket(at(new Date(2026, 7, 31, 0, 0)), now)).toBe("in the last 30 days");
     expect(dateBucket(at(new Date(2026, 7, 30, 23, 59)), now)).toBe("earlier");
+  });
+});
+
+describe("matchesSidebarFocus", () => {
+  const now = new Date(2026, 8, 30, 10, 0);
+  const updated = (date: Date) => conversation("a", "A", date, { updatedAt: date });
+  const today = updated(new Date(2026, 8, 30, 9, 0));
+
+  it("keeps everything with no filter", () => {
+    const old = updated(new Date(2025, 0, 1));
+    expect(matchesSidebarFocus(old, { needsMe: false, recency: "any" }, false, now)).toBe(true);
+  });
+
+  it("needs me: keeps pending approvals and unseen output, not seen failures", () => {
+    const needsMe = { needsMe: true, recency: "any" } as const;
+    expect(matchesSidebarFocus({ ...today, status: "idle" }, needsMe, false, now)).toBe(false);
+    expect(matchesSidebarFocus({ ...today, status: "idle" }, needsMe, true, now)).toBe(true);
+    expect(matchesSidebarFocus({ ...today, status: "failed" }, needsMe, false, now)).toBe(false);
+    expect(
+      matchesSidebarFocus(
+        { ...today, status: "running", pending_elicitations_count: 1 },
+        needsMe,
+        false,
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["day", new Date(2026, 8, 29, 10, 0), new Date(2026, 8, 29, 9, 59)],
+    ["week", new Date(2026, 8, 23, 10, 0), new Date(2026, 8, 23, 9, 59)],
+    ["month", new Date(2026, 7, 31, 10, 0), new Date(2026, 7, 31, 9, 59)],
+  ] as const)("recency %s keeps sessions inside its rolling window", (recency, inside, outside) => {
+    const focus = { needsMe: false, recency };
+    expect(matchesSidebarFocus(updated(inside), focus, false, now)).toBe(true);
+    expect(matchesSidebarFocus(updated(outside), focus, false, now)).toBe(false);
+  });
+
+  it("keeps the day before's sessions just after midnight", () => {
+    const justAfterMidnight = new Date(2026, 8, 30, 0, 15);
+    const lateEvening = updated(new Date(2026, 8, 29, 22, 0));
+    const focus = { needsMe: false, recency: "day" } as const;
+    expect(matchesSidebarFocus(lateEvening, focus, false, justAfterMidnight)).toBe(true);
+  });
+
+  it("applies both filters together", () => {
+    const focus = { needsMe: true, recency: "day" } as const;
+    const stale = updated(new Date(2026, 8, 1));
+    expect(matchesSidebarFocus(stale, focus, true, now)).toBe(false);
+    expect(matchesSidebarFocus(today, focus, true, now)).toBe(true);
   });
 });
 
