@@ -61,7 +61,7 @@ from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
 from urllib import request
 
 from filelock import FileLock
@@ -8632,7 +8632,9 @@ def _attachment_transcript_items_from_entry(
         return current_response_id, []
     if attachment.get("isMeta") is True:
         return current_response_id, []
-    if _is_trusted_agent_notification_text(prompt, origin=attachment.get("origin")):
+    if _is_trusted_agent_notification_text(
+        prompt, origin=attachment.get("origin")
+    ) or _is_unattributed_peer_delivery(prompt, entry=attachment):
         return current_response_id, []
     source_key = _transcript_source_key(entry, line_number, record_offset)
     item = ClaudeTranscriptItem(
@@ -9084,10 +9086,28 @@ def _is_trusted_agent_notification_text(text: str, *, origin: object = None) -> 
     )
 
 
+def _is_unattributed_peer_delivery(text: str, *, entry: _JsonObject) -> bool:
+    """
+    Recognize a teammate delivery Claude framed itself but left without ``origin``.
+
+    Claude Code stamps typed and pasted prompts ``origin: {"kind": "human"}``, so a
+    record with no ``origin`` key and Claude's full framing came from a teammate.
+    """
+    return "origin" not in entry and _peer_message_shape(text) == "framed"
+
+
 def _is_agent_notification_text(text: str) -> bool:
     """Recognize possible agent context; text alone does not prove its origin."""
-    if _is_trusted_agent_notification_text(text):
-        return True
+    return _is_trusted_agent_notification_text(text) or _peer_message_shape(text) is not None
+
+
+def _peer_message_shape(text: str) -> Literal["bare", "framed"] | None:
+    """
+    Classify team envelopes: ``framed`` with Claude's delivery prefix, else ``bare``.
+
+    :returns: ``None`` when anything but envelopes (and, when framed, Claude's
+        trailing guidance) is present.
+    """
     stripped = text.lstrip()
     wrapped = False
     for prefix in _TEAMMATE_MESSAGE_PREFIXES:
@@ -9096,13 +9116,15 @@ def _is_agent_notification_text(text: str) -> bool:
             wrapped = True
             break
     if _TEAMMATE_MESSAGE_RE.match(stripped) is None:
-        return False
+        return None
     while match := _TEAMMATE_MESSAGE_RE.match(stripped):
         stripped = stripped[match.end() :].lstrip()
         if not stripped:
-            return True
+            return "framed" if wrapped else "bare"
     # Wrapped peer messages can append Claude's own explanatory guidance.
-    return wrapped and stripped.startswith(_TEAMMATE_DELIVERY_GUIDANCE)
+    if wrapped and stripped.startswith(_TEAMMATE_DELIVERY_GUIDANCE):
+        return "framed"
+    return None
 
 
 def _subagent_handback_id(origin: object) -> str | None:
@@ -9344,8 +9366,10 @@ def _user_transcript_items_from_entry(
     if isinstance(content, str):
         if not content:
             return current_response_id, []
-        if entry.get("isMeta") is True or _is_trusted_agent_notification_text(
-            content, origin=entry.get("origin")
+        if (
+            entry.get("isMeta") is True
+            or _is_trusted_agent_notification_text(content, origin=entry.get("origin"))
+            or _is_unattributed_peer_delivery(content, entry=entry)
         ):
             items.append(
                 ClaudeTranscriptItem(
@@ -9437,8 +9461,10 @@ def _user_transcript_items_from_entry(
             text = block.get("text")
             if not isinstance(text, str) or not text:
                 continue
-            if entry.get("isMeta") is True or _is_trusted_agent_notification_text(
-                text, origin=entry.get("origin")
+            if (
+                entry.get("isMeta") is True
+                or _is_trusted_agent_notification_text(text, origin=entry.get("origin"))
+                or _is_unattributed_peer_delivery(text, entry=entry)
             ):
                 items.append(
                     ClaudeTranscriptItem(

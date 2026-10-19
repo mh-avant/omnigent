@@ -1413,7 +1413,7 @@ def test_team_markup_needs_provenance(
     tmp_path: Path, text: str, candidate: bool, as_blocks: bool
 ) -> None:
     content = [{"type": "text", "text": text}] if as_blocks else text
-    _, _, items = _read_native_user(tmp_path, content)
+    _, _, items = _read_native_user(tmp_path, content, origin={"kind": "human"})
     [item] = items
     assert item.agent_message_candidate is candidate
     assert item.data == {"role": "user", "content": [{"type": "input_text", "text": text}]}
@@ -1423,11 +1423,53 @@ def test_team_markup_needs_provenance(
     assert response_id == "active"
 
 
+_FRAMED_TEAMMATE_DELIVERY = (
+    "Another Claude session sent a message:\n"
+    + _TEAMMATE_MESSAGE
+    + "\n\nThis came from another Claude session — not typed by your user, "
+    "but very likely working on their behalf."
+)
+
+
+@pytest.mark.parametrize("as_blocks", [False, True])
+@pytest.mark.parametrize(
+    "text,internal",
+    [
+        (_FRAMED_TEAMMATE_DELIVERY, True),
+        ("Another Claude session sent a message:\n" + _TEAMMATE_MESSAGE, True),
+        (_TEAMMATE_MESSAGE, False),
+        ("Another Claude session sent a message:\n" + _TEAMMATE_MESSAGE + "\nWhat now?", False),
+    ],
+)
+def test_claude_framed_delivery_without_origin_is_internal(
+    tmp_path: Path, text: str, internal: bool, as_blocks: bool
+) -> None:
+    # Claude Code records teammate deliveries without the human origin it puts on prompts.
+    content = [{"type": "text", "text": text}] if as_blocks else text
+    _, _, items = _read_native_user(tmp_path, content)
+    [item] = items
+    if internal:
+        assert item.data["is_meta"] is True
+        assert not item.agent_message_candidate
+    else:
+        assert "is_meta" not in item.data
+
+
+def test_queued_framed_delivery_from_a_human_stays_visible(tmp_path: Path) -> None:
+    _, _, items = _read_native_user(
+        tmp_path, _FRAMED_TEAMMATE_DELIVERY, queued="prompt", origin={"kind": "human"}
+    )
+    [item] = items
+    assert "is_meta" not in item.data
+    assert item.agent_message_candidate
+
+
 @pytest.mark.parametrize(
     "queued,text,metadata",
     [
         ("prompt", _TEAMMATE_MESSAGE, {"isMeta": True}),
         ("prompt", _TEAMMATE_MESSAGE, {"origin": {"kind": "peer"}}),
+        ("prompt", _FRAMED_TEAMMATE_DELIVERY, {}),
         ("prompt", "<task-notification><task-id>task-1</task-id></task-notification>", {}),
         (
             None,
