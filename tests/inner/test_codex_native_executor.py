@@ -975,6 +975,63 @@ def test_goal_command_sets_goal_before_starting_objective_turn(
     ]
 
 
+@pytest.mark.parametrize(
+    ("active_turn_id", "live_injection"),
+    [(None, False), ("turn_existing", False), ("turn_existing", True)],
+    ids=["idle", "active-turn", "live-queue"],
+)
+def test_shell_input_runs_through_thread_shell_command(
+    active_turn_id: str | None,
+    live_injection: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A web ``!command`` runs in Codex's shell instead of prompting the model."""
+    _FakeCodexNativeClient.requests = []
+    _FakeCodexNativeClient.created = []
+    monkeypatch.setattr(
+        "omnigent.harnesses.codex_native.app_server.CodexAppServerClient",
+        _FakeCodexNativeClient,
+    )
+    _seed_bridge(tmp_path, active_turn_id=active_turn_id)
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    if live_injection:
+        assert asyncio.run(executor.enqueue_session_message("main", "  !gcloud auth login\n"))
+    else:
+        events = _collect_turn_events(executor, "  !gcloud auth login\n")
+        assert [type(event) for event in events] == [TurnComplete]
+
+    assert _FakeCodexNativeClient.requests == [
+        ("thread/shellCommand", {"threadId": "thread_123", "command": "gcloud auth login"})
+    ]
+    # Codex reports the shell's turn through turn/started; nothing is recorded here.
+    state = read_bridge_state(tmp_path)
+    assert state is not None
+    assert state.active_turn_id == active_turn_id
+
+
+@pytest.mark.parametrize("text", ["!!not a command", "!", "say !hi"])
+def test_non_shell_bang_text_is_sent_as_a_prompt(
+    text: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Only a lone ``!command`` is shell input; anything else reaches the model."""
+    _FakeCodexNativeClient.requests = []
+    _FakeCodexNativeClient.created = []
+    _FakeCodexNativeClient.next_turn = 1
+    monkeypatch.setattr(
+        "omnigent.harnesses.codex_native.app_server.CodexAppServerClient",
+        _FakeCodexNativeClient,
+    )
+    _seed_bridge(tmp_path)
+
+    _collect_turn_events(CodexNativeExecutor(bridge_dir=tmp_path), text)
+
+    assert [method for method, _params in _FakeCodexNativeClient.requests] == ["turn/start"]
+
+
 def test_overlong_goal_command_fails_clearly_without_reaching_app_server(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

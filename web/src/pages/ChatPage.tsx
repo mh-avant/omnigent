@@ -115,6 +115,7 @@ import {
 } from "@/lib/sideChat";
 import { shouldQueueSend } from "@/lib/messageQueue";
 import { readAlwaysSteer } from "@/lib/alwaysSteerPreferences";
+import { harnessRunsShellCommands } from "@/lib/runnableCommands";
 import { skillInvocationPrefix } from "@/lib/harnessSetup";
 import { DEVIN_NATIVE_PERMISSION_MODES } from "@/lib/nativeHarnessModes";
 import { readSubmitWithModEnter } from "@/lib/composerSendShortcutPreferences";
@@ -273,6 +274,7 @@ import { GoalDialog, CommandGoalDialog, GoalStatusPill, useGoalState } from "@/c
 import { useIsCoarsePointer } from "@/hooks/useIsCoarsePointer";
 import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
 import { ConnectionIndicator } from "./ChatIndicators";
+import { RunCommandsProvider } from "@/components/chat/RunCommandsProvider";
 import { Transcript } from "@/components/chat/Transcript";
 
 /** Server-info as consumers see it: the probe's result, or "loading". */
@@ -974,6 +976,22 @@ export function ChatPage() {
     ],
   );
 
+  // Agent-suggested commands queue as separate `!command` shell inputs, even
+  // when idle: the queue sends its head now and each later one on its own idle
+  // edge, so the commands never merge into one turn.
+  const onRunCommands = useCallback(
+    (commands: string[]) => {
+      if (!agentId || isTempConvId(urlConvId)) return;
+      if (urlConvId && isUnreachable) {
+        void reconnect();
+        return;
+      }
+      const chat = useChatStore.getState();
+      for (const command of commands) chat.enqueueMessage(`!${command}`);
+    },
+    [agentId, urlConvId, isUnreachable, reconnect],
+  );
+
   const onSendSlashCommand = useCallback(
     (name: string, args: string) => {
       if (!agentId) return;
@@ -1149,6 +1167,7 @@ export function ChatPage() {
       agentsError={agentsError}
       disabled={!agentId || agentsError !== null}
       onSend={onSend}
+      onRunCommands={onRunCommands}
       onNewSession={openNewSession}
       onSendSlashCommand={onSendSlashCommand}
       onStop={onStop}
@@ -1294,6 +1313,8 @@ interface MainAgentSurfaceProps {
   agentsError: unknown;
   disabled: boolean;
   onSend: (text: string, files?: File[], replyDraft?: StoredReplyDraft) => void;
+  /** Queue agent-suggested shell commands, one `!command` input each. */
+  onRunCommands: (commands: string[]) => void;
   /**
    * Invoke a skill via the `slash_command` event path. Gated off inside
    * `MainAgentSurface` for terminal-first (native) sessions, where `/skill`
@@ -1460,6 +1481,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
   agentsError,
   disabled,
   onSend,
+  onRunCommands,
   onSendSlashCommand,
   onNewSession,
   onStop,
@@ -1741,21 +1763,25 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
           {/* The scrolling transcript column owns every streaming-hot store
           subscription and the bubble pipeline, so an SSE frame re-renders it
           alone — this surface's composer and chrome below bail out. */}
-          <Transcript
-            hostId={hostId}
-            setConversationEl={setConversationEl}
-            containerEl={containerEl}
-            scroller={scroller}
-            setScroller={setScroller}
-            sendScrollNonce={sendScrollNonce}
-            hasMoreHistory={hasMoreHistory}
-            loadingMoreHistory={loadingMoreHistory}
-            isMobileViewport={isMobileViewport}
-            showsWorking={showsWorking}
-            agentsError={agentsError}
-            sandboxLaunching={sandboxLaunching}
-            spacerMeasureRef={spacerMeasureRef}
-          />
+          <RunCommandsProvider
+            onRun={harnessRunsShellCommands(selectionSessionHarness) ? onRunCommands : null}
+          >
+            <Transcript
+              hostId={hostId}
+              setConversationEl={setConversationEl}
+              containerEl={containerEl}
+              scroller={scroller}
+              setScroller={setScroller}
+              sendScrollNonce={sendScrollNonce}
+              hasMoreHistory={hasMoreHistory}
+              loadingMoreHistory={loadingMoreHistory}
+              isMobileViewport={isMobileViewport}
+              showsWorking={showsWorking}
+              agentsError={agentsError}
+              sandboxLaunching={sandboxLaunching}
+              spacerMeasureRef={spacerMeasureRef}
+            />
+          </RunCommandsProvider>
           {/* Floating reply button — scoped to the conversation container. */}
           <SelectionPopup
             containerRef={conversationRef}

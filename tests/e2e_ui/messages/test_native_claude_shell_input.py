@@ -1,6 +1,7 @@
 """A web shell command settles through the real Claude transcript forwarder."""
 
 import shutil
+import time
 import uuid
 
 import httpx
@@ -73,3 +74,54 @@ def test_web_shell_command_settles_before_the_next_prompt(
     expect(page.locator(_USER)).to_have_count(2, timeout=30_000)
     expect(shell).to_have_count(1)
     expect(page.locator(_ASSISTANT, has_text=reply).first).to_be_visible()
+
+
+@pytest.mark.nightly
+@pytest.mark.timeout(240)
+def test_run_button_queues_each_suggested_command(
+    page: Page,
+    native_claude_mock_session: tuple[str, str],
+    mock_llm_server_url: str,
+) -> None:
+    base_url, session_id = native_claude_mock_session
+    first = f"run-first-{uuid.uuid4().hex[:8]}"
+    second = f"run-second-{uuid.uuid4().hex[:8]}"
+    reply = f"Please run:\n\n```\n!echo {first}\n!echo {second}\n```"
+    reset_mock_llm(mock_llm_server_url)
+    for model in ("default", _CLAUDE_MOCK_MODEL):
+        set_fallback_mock_llm(mock_llm_server_url, model, reply)
+
+    page.goto(f"{base_url}/c/{session_id}")
+    _open_terminal_view(page)
+    _wait_terminal_connected(page)
+    _ensure_chat_view(page)
+    _send(page, "What should I run?")
+    expect(page.locator(_WORKING)).to_have_count(0, timeout=60_000)
+
+    page.locator(_ASSISTANT).get_by_role("button", name="Run 2 commands").click()
+    page.get_by_role("dialog").get_by_role("button", name="Run", exact=True).click()
+
+    for marker in (first, second):
+        expect(page.locator(_USER, has_text=f"!echo {marker}")).to_have_count(1, timeout=60_000)
+    with httpx.Client(base_url=base_url, timeout=15) as client:
+
+        def shell_inputs() -> list[str]:
+            items = client.get(
+                f"/v1/sessions/{session_id}/items", params={"limit": 100, "order": "asc"}
+            )
+            items.raise_for_status()
+            return [
+                item["input"]
+                for item in items.json()["data"]
+                if item["type"] == "terminal_command" and item["kind"] == "input"
+            ]
+
+        # Each command reaches Claude as its own shell input, in order.
+        expect(page.locator(_USER, has_text="!echo")).to_have_count(2)
+        deadline = time.monotonic() + 60
+        while shell_inputs() != [f"echo {first}", f"echo {second}"]:
+            assert time.monotonic() < deadline, shell_inputs()
+            time.sleep(1)
+        snapshot = client.get(f"/v1/sessions/{session_id}")
+        snapshot.raise_for_status()
+        assert snapshot.json()["pending_inputs"] == []

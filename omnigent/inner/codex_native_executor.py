@@ -215,9 +215,17 @@ async def _connect_to_app_server(state: CodexNativeBridgeState) -> CodexAppServe
                 await client.close()
 
 
+_NativeDeliveryMethod = Literal["turn/start", "turn/steer", "thread/shellCommand"]
+_DELIVERY_STAGES: dict[str, str] = {
+    "turn/start": "turn_start",
+    "turn/steer": "turn_steer",
+    "thread/shellCommand": "shell_command",
+}
+
+
 async def _native_delivery_request(
     client: CodexAppServerClient,
-    method: Literal["turn/start", "turn/steer"],
+    method: _NativeDeliveryMethod,
     params: CodexParams,
     state: CodexNativeBridgeState,
     *,
@@ -235,7 +243,7 @@ async def _native_delivery_request(
             session_id=state.session_id,
             thread_id=state.thread_id,
             requested_native_turn_id=state.active_turn_id,
-            stage="turn_start" if method == "turn/start" else "turn_steer",
+            stage=_DELIVERY_STAGES[method],
             outcome="server_draining",
             rpc_error_code=error.code,
         )
@@ -266,13 +274,13 @@ async def _native_delivery_request(
 
 async def _native_delivery_request_once(
     client: CodexAppServerClient,
-    method: Literal["turn/start", "turn/steer"],
+    method: _NativeDeliveryMethod,
     params: CodexParams,
     state: CodexNativeBridgeState,
 ) -> CodexMessage:
     """Pair each RPC attempt with its result, including a rejected stale steer."""
     attempt_id = uuid.uuid4().hex
-    stage = "turn_start" if method == "turn/start" else "turn_steer"
+    stage = _DELIVERY_STAGES[method]
     expected = params.get("expectedTurnId") if method == "turn/steer" else None
     requested_turn_id = expected if isinstance(expected, str) else None
     requested_thread = params.get("threadId")
@@ -318,6 +326,8 @@ async def _native_delivery_request_once(
     else:
         turn_id = result.get("turnId") if result is not None else None
     native_turn_id = turn_id if isinstance(turn_id, str) and turn_id else None
+    # A shell command's ack is empty; its turn arrives later via turn/started.
+    accepted = native_turn_id is not None or method == "thread/shellCommand"
     log_input_event(
         _logger,
         "codex_native_delivery_finished",
@@ -327,7 +337,7 @@ async def _native_delivery_request_once(
         thread_id=thread_id,
         requested_native_turn_id=requested_turn_id,
         native_turn_id=native_turn_id,
-        outcome="rpc_accepted" if native_turn_id else "rpc_accepted_missing_turn_id",
+        outcome="rpc_accepted" if accepted else "rpc_accepted_missing_turn_id",
     )
     return response
 
@@ -435,6 +445,24 @@ async def _steer_codex_turn(
     if isinstance(turn_id, str) and turn_id:
         update_active_turn_id(bridge_dir, turn_id)
         _logger.info("Codex native steered active turn: turn_id=%s", turn_id)
+
+
+async def _run_codex_shell_command(
+    client: CodexAppServerClient,
+    *,
+    bridge_dir: Path,
+    state: CodexNativeBridgeState,
+    command: str,
+) -> None:
+    """Run a web ``!command`` in the thread's shell, inside any active turn."""
+    await _native_delivery_request(
+        client,
+        "thread/shellCommand",
+        {"threadId": state.thread_id, "command": command},
+        state,
+        bridge_dir=bridge_dir,
+    )
+    _logger.info("Codex native ran user shell command")
 
 
 async def _inject_codex_turn(
@@ -648,13 +676,19 @@ class CodexNativeExecutor(Executor):
             if client is None:
                 return False
             try:
-                await _inject_codex_turn(
-                    client,
-                    bridge_dir=self._bridge_dir,
-                    state=state,
-                    input_items=input_items,
-                    settings_overrides={},
-                )
+                shell_command = _shell_command_from_input_items(input_items)
+                if shell_command is not None:
+                    await _run_codex_shell_command(
+                        client, bridge_dir=self._bridge_dir, state=state, command=shell_command
+                    )
+                else:
+                    await _inject_codex_turn(
+                        client,
+                        bridge_dir=self._bridge_dir,
+                        state=state,
+                        input_items=input_items,
+                        settings_overrides={},
+                    )
             except Exception as exc:
                 ambiguous = isinstance(exc, InjectionDeliveryAmbiguous)
                 _logger.warning(
@@ -910,8 +944,20 @@ class CodexNativeExecutor(Executor):
                     undelivered = True
                 else:
                     try:
+                        shell_command = (
+                            _shell_command_from_input_items(input_items)
+                            if goal_objective is None
+                            else None
+                        )
                         side_question = side_chat.side_chat_question(input_items)
-                        if side_question is not None:
+                        if shell_command is not None:
+                            await _run_codex_shell_command(
+                                client,
+                                bridge_dir=self._bridge_dir,
+                                state=state,
+                                command=shell_command,
+                            )
+                        elif side_question is not None:
                             # /side opens an ephemeral fork as its own sub-agent chat.
                             # The fork must happen on the forwarder's connection —
                             # it owns the fork's event stream, while this client
@@ -1087,6 +1133,25 @@ def _latest_user_content(messages: list[Message]) -> object:
         if message.get("role") == "user":
             return message.get("content")
     return None
+
+
+def _shell_command_from_input_items(input_items: list[dict[str, object]]) -> str | None:
+    """
+    Return the command of a lone shell-mode text input.
+
+    :param input_items: Codex input items, e.g. ``[{"type": "text", "text": "!ls -la"}]``.
+    :returns: The command without its ``!`` prefix, e.g. ``"ls -la"``, or ``None``
+        when the input is a prompt (including ``!!`` and attachment-bearing input).
+    """
+    if len(input_items) != 1 or input_items[0].get("type") != "text":
+        return None
+    text = input_items[0].get("text")
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    if not text.startswith("!") or text.startswith("!!"):
+        return None
+    return text[1:].strip() or None
 
 
 def _content_to_input_items(content: object, bridge_dir: Path) -> list[dict[str, object]]:

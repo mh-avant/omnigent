@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { copyText } from "@/lib/clipboard";
 import { getEmbedRoot } from "@/lib/host";
 import { useResolvedThemeMode } from "@/components/theme/useResolvedThemeMode";
+import { extractRunnableCommands } from "@/lib/runnableCommands";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
@@ -309,7 +310,15 @@ export const MessageBranchPage = ({ className, ...props }: MessageBranchPageProp
   );
 };
 
+/**
+ * Asks to run shell commands an agent suggested, or null where the session
+ * can't run them. Code blocks and `!` inline spans show a Run control when set.
+ */
+export const RunCommandsContext = createContext<((commands: string[]) => void) | null>(null);
+
 export type MessageResponseProps = Omit<StreamdownProps, "rehypePlugins" | "mermaid"> & {
+  /** Offer Run on suggested commands (agent prose, not user text or streaming output). */
+  allowRunCommands?: boolean;
   /**
    * Hand file-path links to the `a` component override instead of letting the
    * harden pass turn them into app-origin navigations or " [blocked]" text.
@@ -357,6 +366,14 @@ function extractCodeText(children: ReactNode): string {
   }
 
   return "";
+}
+
+/** The fence language of a code block's `<code>` child, e.g. `"bash"`. */
+function extractCodeLanguage(children: ReactNode): string | null {
+  if (!isValidElement(children)) return null;
+  const { className } = children.props as { className?: unknown };
+  if (typeof className !== "string") return null;
+  return /(?:^|\s)language-(\S+)/.exec(className)?.[1] ?? null;
 }
 
 // Streamdown ships its own 16px icon set (filled, even-odd fill rule) rather
@@ -511,6 +528,17 @@ const CodeWrapTextIcon = (props: CodeHeaderIconProps) => (
   </svg>
 );
 
+const CodeRunIcon = (props: CodeHeaderIconProps) => (
+  <svg fill="none" height={16} viewBox="0 0 16 16" width={16} {...props}>
+    <path
+      d="M4.5 2.75 12.5 8l-8 5.25Z"
+      stroke="currentColor"
+      strokeLinejoin="round"
+      strokeWidth={1.5}
+    />
+  </svg>
+);
+
 // Shared visual style for the buttons in a chat code block header (copy, wrap
 // toggle). Keeps the frosted resting look that matches Streamdown's own button
 // pill, but pins the hover background to that same frosted fill so the ghost
@@ -567,6 +595,31 @@ function ChatCodeBlockCopyButton({ getCode }: { getCode: () => string }) {
   );
 }
 
+export function RunCommandsButton({
+  commands,
+  onRun,
+  className,
+}: {
+  commands: string[];
+  onRun: (commands: string[]) => void;
+  className?: string;
+}) {
+  const label = commands.length === 1 ? "Run command" : `Run ${commands.length} commands`;
+  return (
+    <Button
+      aria-label={label}
+      className={cn(CODE_BLOCK_OVERLAY_BUTTON_CLASS, className)}
+      onClick={() => onRun(commands)}
+      size="icon-sm"
+      title={label}
+      type="button"
+      variant="ghost"
+    >
+      <CodeRunIcon />
+    </Button>
+  );
+}
+
 function ChatCodeBlockWrapToggle({ wrap, onToggle }: { wrap: boolean; onToggle: () => void }) {
   return (
     <Button
@@ -594,6 +647,12 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
   // horizontal-scroll view for when column alignment matters.
   const [wrap, setWrap] = useState(true);
   const toggleWrap = useCallback(() => setWrap((w) => !w), []);
+  const requestRun = useContext(RunCommandsContext);
+  const language = extractCodeLanguage(children);
+  const commands = useMemo(
+    () => (requestRun ? extractRunnableCommands(code, language) : []),
+    [requestRun, code, language],
+  );
   const block = isValidElement(children)
     ? cloneElement(children, { "data-block": "true" } as Record<string, unknown>)
     : children;
@@ -611,6 +670,9 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
       {/* Match Streamdown's action-pill height and reserve its rightmost slot
           for download. All controls stay anchored to the header. */}
       <div className="absolute top-2 right-12 z-10 -mr-1.5 flex items-center gap-0.5 border-y border-transparent py-1">
+        {requestRun && commands.length > 0 && (
+          <RunCommandsButton commands={commands} onRun={requestRun} />
+        )}
         <ChatCodeBlockWrapToggle onToggle={toggleWrap} wrap={wrap} />
         <ChatCodeBlockCopyButton getCode={getCode} />
       </div>
@@ -619,8 +681,16 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
 }
 
 export const MessageResponse = memo(
-  ({ className, components, controls, markFileLinks = false, ...props }: MessageResponseProps) => {
+  ({
+    className,
+    components,
+    controls,
+    markFileLinks = false,
+    allowRunCommands = false,
+    ...props
+  }: MessageResponseProps) => {
     const themeMode = useResolvedThemeMode();
+    const requestRun = useContext(RunCommandsContext);
     const messageComponents = useMemo(
       () => ({ ...components, pre: ChatCodeBlockPre, table: ChatTable }),
       [components],
@@ -630,30 +700,32 @@ export const MessageResponse = memo(
     const mermaidOptions = useMemo(() => mermaidOptionsForTheme(themeMode), [themeMode]);
 
     return (
-      <MarkdownErrorBoundary source={props.children}>
-        {/* Streamdown is memoized and its comparator ignores the mermaid prop,
+      <RunCommandsContext.Provider value={allowRunCommands ? requestRun : null}>
+        <MarkdownErrorBoundary source={props.children}>
+          {/* Streamdown is memoized and its comparator ignores the mermaid prop,
             so remount on theme change to recolor already-rendered diagrams. */}
-        <Streamdown
-          key={themeMode}
-          // wrap-anywhere is inherited, giving every prose descendant (including inline code) a break opportunity.
-          className={cn(
-            "message-markdown size-full wrap-anywhere [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-            className,
-          )}
-          plugins={STREAMDOWN_PLUGINS}
-          // Let links open on a plain click (and cmd/ctrl-click in a new tab)
-          // instead of Streamdown's default "Open external link?" modal.
-          linkSafety={CHAT_LINK_SAFETY}
-          {...props}
-          components={messageComponents}
-          controls={messageControls}
-          mermaid={mermaidOptions}
-          // Block remote image fetches that can exfiltrate data through URLs.
-          rehypePlugins={
-            markFileLinks ? FILE_LINK_STREAMDOWN_REHYPE_PLUGINS : SECURE_STREAMDOWN_REHYPE_PLUGINS
-          }
-        />
-      </MarkdownErrorBoundary>
+          <Streamdown
+            key={themeMode}
+            // wrap-anywhere is inherited, giving every prose descendant (including inline code) a break opportunity.
+            className={cn(
+              "message-markdown size-full wrap-anywhere [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+              className,
+            )}
+            plugins={STREAMDOWN_PLUGINS}
+            // Let links open on a plain click (and cmd/ctrl-click in a new tab)
+            // instead of Streamdown's default "Open external link?" modal.
+            linkSafety={CHAT_LINK_SAFETY}
+            {...props}
+            components={messageComponents}
+            controls={messageControls}
+            mermaid={mermaidOptions}
+            // Block remote image fetches that can exfiltrate data through URLs.
+            rehypePlugins={
+              markFileLinks ? FILE_LINK_STREAMDOWN_REHYPE_PLUGINS : SECURE_STREAMDOWN_REHYPE_PLUGINS
+            }
+          />
+        </MarkdownErrorBoundary>
+      </RunCommandsContext.Provider>
     );
   },
 );
