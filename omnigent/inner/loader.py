@@ -18,6 +18,7 @@ from .datamodel import (
     OSEnvSpec,
     ParamDef,
     TerminalEnvSpec,
+    claude_sdk_native_tools_error,
     parse_write_paths,
 )
 from .policies import (
@@ -705,6 +706,11 @@ def _parse_executor_spec(data: YamlData | str | bool | None) -> ExecutorSpec | N
         system_prompt_mode = data.get("system_prompt_mode")
         if "system_prompt_mode" in data and system_prompt_mode not in ("append", "replace"):
             raise ValueError("executor.system_prompt_mode must be 'append' or 'replace'")
+        native_tools = data.get("native_tools")
+        if "native_tools" in data:
+            native_tools_error = claude_sdk_native_tools_error(native_tools)
+            if native_tools_error:
+                raise ValueError(f"executor.native_tools {native_tools_error}")
         return ExecutorSpec(
             model=data.get("model"),
             harness=data.get("harness"),
@@ -712,6 +718,7 @@ def _parse_executor_spec(data: YamlData | str | bool | None) -> ExecutorSpec | N
             auth=auth,
             context_files=context_files,
             system_prompt_mode=system_prompt_mode,
+            native_tools=native_tools,
         )
     return None
 

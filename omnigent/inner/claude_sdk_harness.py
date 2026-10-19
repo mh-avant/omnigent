@@ -77,6 +77,13 @@ Env vars read at startup:
   surface as agent-bundled skills (regardless of
   ``skills_filter``). Unset for agents without a bundled-skills
   directory.
+- ``HARNESS_CLAUDE_SDK_NATIVE_TOOLS``: JSON-encoded list of
+  Claude Code built-in tools to enable, carrying
+  ``executor.config.native_tools``, e.g.
+  ``["WebSearch", "WebFetch"]``. Names outside
+  :data:`~omnigent.inner.datamodel.CLAUDE_SDK_NATIVE_TOOLS` are
+  dropped with a warning. When unset, no built-ins beyond
+  ``Skill`` / ``ToolSearch`` are enabled.
 - ``HARNESS_CLAUDE_SDK_AGENT_NAME``: Agent display name. Used
   when ``HARNESS_CLAUDE_SDK_BUNDLE_DIR`` is set to write the
   bundle's ``.claude-plugin/plugin.json`` manifest with a
@@ -95,7 +102,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from omnigent.inner.claude_sdk_executor import ClaudeSDKExecutor
-from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
+from omnigent.inner.datamodel import CLAUDE_SDK_NATIVE_TOOLS, OSEnvSandboxSpec, OSEnvSpec
 from omnigent.inner.executor import Executor
 from omnigent.inner.os_env_serialization import decode_sandbox_spec
 from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter
@@ -118,6 +125,7 @@ _ENV_RETRY_POLICY = "HARNESS_CLAUDE_SDK_RETRY_POLICY"
 _ENV_SKILLS_FILTER = "HARNESS_CLAUDE_SDK_SKILLS_FILTER"
 _ENV_BUNDLE_DIR = "HARNESS_CLAUDE_SDK_BUNDLE_DIR"
 _ENV_AGENT_NAME = "HARNESS_CLAUDE_SDK_AGENT_NAME"
+_ENV_NATIVE_TOOLS = "HARNESS_CLAUDE_SDK_NATIVE_TOOLS"
 _ENV_GATEWAY_BASE_URL = "HARNESS_CLAUDE_SDK_GATEWAY_BASE_URL"
 _ENV_GATEWAY_AUTH_COMMAND = "HARNESS_CLAUDE_SDK_GATEWAY_AUTH_COMMAND"
 _ENV_GATEWAY_AUTH_REFRESH_INTERVAL_MS = "HARNESS_CLAUDE_SDK_GATEWAY_AUTH_REFRESH_INTERVAL_MS"
@@ -254,6 +262,40 @@ def _resolve_skills_filter() -> str | list[str]:
     return "all"
 
 
+def _resolve_native_tools() -> list[str]:
+    """
+    Resolve the Claude Code built-in tools to enable from env config.
+
+    Reads :data:`_ENV_NATIVE_TOOLS` (a JSON list of tool names). A
+    missing or malformed value enables none; unsupported names are
+    dropped, since spec validation should already have rejected them.
+
+    :returns: Supported tool names, e.g. ``["WebSearch", "WebFetch"]``.
+    """
+    raw = os.environ.get(_ENV_NATIVE_TOOLS, "").strip()
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _logger.warning(
+            "%s is not valid JSON (%s); enabling no native tools", _ENV_NATIVE_TOOLS, exc
+        )
+        return []
+    if not isinstance(decoded, list):
+        _logger.warning("%s is not a list; enabling no native tools", _ENV_NATIVE_TOOLS)
+        return []
+    supported = [name for name in decoded if name in CLAUDE_SDK_NATIVE_TOOLS]
+    if len(supported) != len(decoded):
+        _logger.warning(
+            "%s named unsupported tools %r; enabling only %r",
+            _ENV_NATIVE_TOOLS,
+            decoded,
+            supported,
+        )
+    return supported
+
+
 def _build_claude_sdk_executor() -> Executor:
     """
     Construct a :class:`ClaudeSDKExecutor` from env-var config.
@@ -301,6 +343,7 @@ def _build_claude_sdk_executor() -> Executor:
         agent_name=agent_name,
         skills_filter=_resolve_skills_filter(),
         api_key_helper=os.environ.get(_ENV_API_KEY_HELPER) or None,
+        native_tools=_resolve_native_tools(),
     )
 
 

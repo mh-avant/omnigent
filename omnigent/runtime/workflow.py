@@ -1448,6 +1448,10 @@ def _build_claude_sdk_spawn_env(
     # Explicitly clear inherited presets for agents that have not opted in.
     preset = spec.executor.config.get("system_prompt_preset")
     env["HARNESS_CLAUDE_SDK_SYSTEM_PROMPT_PRESET"] = str(preset) if preset is not None else ""
+    # Claude Code built-ins the spec opted into, e.g. WebSearch / WebFetch.
+    native_tools = spec.executor.config.get("native_tools")
+    if native_tools:
+        env["HARNESS_CLAUDE_SDK_NATIVE_TOOLS"] = json.dumps(native_tools)
     return env
 
 

@@ -335,6 +335,25 @@ class SessionState(enum.Enum):
 # ExecutorSpec (lightweight)
 # ---------------------------------------------------------------------------
 
+#: Claude Code built-in tools a ``claude-sdk`` spec may opt into via
+#: ``native_tools``. OS tools stay on the sandboxed ``sys_os_*`` path.
+CLAUDE_SDK_NATIVE_TOOLS: frozenset[str] = frozenset({"WebSearch", "WebFetch"})
+
+
+def claude_sdk_native_tools_error(value: object) -> str | None:
+    """Describe why *value* is not a valid ``native_tools`` list.
+
+    :param value: The raw ``native_tools`` value from the spec.
+    :returns: An error message, or ``None`` when the value is valid.
+    """
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        return "must be a list of tool names"
+    unknown = sorted(set(value) - CLAUDE_SDK_NATIVE_TOOLS)
+    if unknown:
+        supported = ", ".join(sorted(CLAUDE_SDK_NATIVE_TOOLS))
+        return f"unsupported tool(s) {', '.join(unknown)}; supported: {supported}"
+    return None
+
 
 @dataclass
 class ExecutorSpec:
@@ -355,6 +374,8 @@ class ExecutorSpec:
         re-reading raw YAML.
     :param context_files: Pi context-file discovery override. None uses Pi's default.
     :param system_prompt_mode: Pi prompt delivery: append (default) or replace its base prompt.
+    :param native_tools: Claude Code built-in tools to enable on ``claude-sdk``,
+        e.g. ``["WebSearch", "WebFetch"]``. None enables none.
     """
 
     model: str | None = None
@@ -363,6 +384,7 @@ class ExecutorSpec:
     auth: object | None = None  # ApiKeyAuth | DatabricksAuth | None
     context_files: bool | None = None
     system_prompt_mode: str | None = None
+    native_tools: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------

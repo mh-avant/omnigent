@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from omnigent.errors import ErrorCode, OmnigentError
-from omnigent.harness_aliases import canonicalize_harness
+from omnigent.harness_aliases import canonicalize_harness, is_claude_sdk_harness_name
 from omnigent.harness_plugins import (
     accepted_harnesses,
     missing_install_packages,
@@ -195,6 +195,14 @@ def validate_omnigent_executor(
             result.add("executor.config.system_prompt_mode", "must be 'append' or 'replace'")
         if harness != "pi":
             result.add("executor.config.system_prompt_mode", "only supported with harness 'pi'")
+    if "native_tools" in spec.executor.config:
+        from omnigent.inner.datamodel import claude_sdk_native_tools_error
+
+        native_tools_error = claude_sdk_native_tools_error(spec.executor.config["native_tools"])
+        if native_tools_error:
+            result.add("executor.config.native_tools", native_tools_error)
+        if not is_claude_sdk_harness_name(harness):
+            result.add("executor.config.native_tools", "only supported with harness 'claude-sdk'")
     if not harness:
         result.add(
             "executor.config.harness",

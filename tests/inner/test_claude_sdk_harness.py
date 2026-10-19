@@ -439,6 +439,41 @@ def test_skills_filter_env_var_malformed_json_falls_back_to_all(
     assert captured["skills_filter"] == "all"
 
 
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (None, []),
+        ('["WebSearch", "WebFetch"]', ["WebSearch", "WebFetch"]),
+        ('["WebSearch", "Bash"]', ["WebSearch"]),
+        ('"WebSearch"', []),
+        ("{not-json", []),
+    ],
+    ids=["unset", "both", "unsupported-dropped", "not-a-list", "malformed"],
+)
+def test_native_tools_env_var_decodes(
+    raw_value: str | None,
+    expected: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``HARNESS_CLAUDE_SDK_NATIVE_TOOLS`` reaches the executor as supported names only."""
+    if raw_value is None:
+        monkeypatch.delenv("HARNESS_CLAUDE_SDK_NATIVE_TOOLS", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_CLAUDE_SDK_NATIVE_TOOLS", raw_value)
+    captured: dict[str, Any] = {}
+
+    def _fake_init(self: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    with patch(
+        "omnigent.inner.claude_sdk_harness.ClaudeSDKExecutor.__init__",
+        _fake_init,
+    ):
+        claude_sdk_harness._build_claude_sdk_executor()
+
+    assert captured["native_tools"] == expected
+
+
 def test_bundle_dir_and_agent_name_env_vars_thread_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

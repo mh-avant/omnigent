@@ -88,6 +88,25 @@ authoritative approval surface; supported one-time tool approvals can also be
 mirrored into Chat cards, while persistent trust choices remain explicit Kiro
 TUI/flag actions. See `kiro-native-elicitation.md`.
 
+### Claude SDK built-in web tools
+
+`harness: claude-sdk` hides Claude Code's built-in tools by default; file and
+shell access go through the sandboxed `sys_os_*` tools instead. Set
+`native_tools` to turn on Claude Code's own web search and fetch:
+
+```yaml
+executor:
+  harness: claude-sdk
+  native_tools: [WebSearch, WebFetch]
+```
+
+In a directory bundle, put it under `executor.config.native_tools`. Only
+`WebSearch` and `WebFetch` are accepted. Both run inside the Claude CLI, still
+pass Omnigent `TOOL_CALL` policies, and are pre-approved in the default `auto`
+permission mode. `WebSearch` is served by Anthropic's API, so it is withheld
+when `ANTHROPIC_BASE_URL` points at a non-Anthropic gateway (Bedrock, Vertex
+and Foundry gate it themselves); `WebFetch` stays available.
+
 ### Antigravity (Gemini)
 
 `harness: antigravity` runs the agent through Google's

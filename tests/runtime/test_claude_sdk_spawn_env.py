@@ -125,6 +125,21 @@ def test_bare_model_is_passed_through_unchanged() -> None:
     assert env["HARNESS_CLAUDE_SDK_MODEL"] == "claude-sonnet-4-6"
 
 
+@pytest.mark.parametrize(
+    ("native_tools", "expected"),
+    [(None, None), (["WebSearch", "WebFetch"], '["WebSearch", "WebFetch"]')],
+    ids=["unset", "both"],
+)
+def test_native_tools_threads_to_env(native_tools: list[str] | None, expected: str | None) -> None:
+    """``executor.config.native_tools`` reaches the harness as a JSON list."""
+    spec = _make_spec(model="claude-sonnet-4-6")
+    if native_tools is not None:
+        spec.executor.config["native_tools"] = native_tools
+    env = _build_claude_sdk_spawn_env(spec, workdir=None)
+
+    assert env.get("HARNESS_CLAUDE_SDK_NATIVE_TOOLS") == expected
+
+
 def test_api_key_auth_sets_helper_env_var() -> None:
     """
     ``executor.auth: {type: api_key, api_key: …}`` sets

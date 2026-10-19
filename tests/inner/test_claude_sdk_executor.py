@@ -3505,6 +3505,53 @@ def test_unset_env_var_restores_on_exception(monkeypatch):
     assert os.environ["CLAUDECODE"] == "original"
 
 
+_GATEWAY_URL = "https://gateway.example.com/anthropic"
+
+
+@pytest.mark.parametrize(
+    ("cli_env", "inherited_env", "expected"),
+    [
+        ({}, {}, ["WebSearch", "WebFetch"]),
+        ({"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}, {}, ["WebSearch", "WebFetch"]),
+        ({"ANTHROPIC_BASE_URL": _GATEWAY_URL}, {}, ["WebFetch"]),
+        ({}, {"ANTHROPIC_BASE_URL": _GATEWAY_URL}, ["WebFetch"]),
+        (
+            {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
+            {"ANTHROPIC_BASE_URL": _GATEWAY_URL},
+            ["WebSearch", "WebFetch"],
+        ),
+        (
+            {"ANTHROPIC_BASE_URL": _GATEWAY_URL, "CLAUDE_CODE_USE_BEDROCK": "1"},
+            {},
+            ["WebSearch", "WebFetch"],
+        ),
+    ],
+    ids=[
+        "first-party",
+        "anthropic-host",
+        "gateway",
+        "inherited-gateway",
+        "cli-env-wins",
+        "bedrock",
+    ],
+)
+def test_native_tools_for_endpoint_withholds_websearch_on_gateways(
+    monkeypatch, cli_env, inherited_env, expected
+) -> None:
+    """WebSearch is dropped only when the CLI's endpoint is a non-Anthropic gateway."""
+    from omnigent.inner.claude_sdk_executor import (
+        _CLAUDE_CLOUD_PROVIDER_FLAG_ENVS,
+        _native_tools_for_endpoint,
+    )
+
+    for name in ("ANTHROPIC_BASE_URL", *_CLAUDE_CLOUD_PROVIDER_FLAG_ENVS):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in inherited_env.items():
+        monkeypatch.setenv(name, value)
+
+    assert _native_tools_for_endpoint(("WebSearch", "WebFetch"), cli_env) == expected
+
+
 def test_databricks_model_without_routing_raises() -> None:
     """``databricks-*`` model with ``gateway=False`` raises ``ValueError``.
 
@@ -4925,6 +4972,88 @@ class TestToolCallPolicyGate(unittest.TestCase):
                         pass
 
             self.assertIsNone(captured["can_use_tool"])
+
+        _run(_t())
+
+    def test_native_tools_are_exposed_but_not_pre_approved(self):
+        """Opted-in built-ins join the base tool set but stay off
+        allowed_tools, so every call still reaches the policy gate."""
+        from omnigent.inner.claude_sdk_executor import ClaudeSDKExecutor
+
+        async def _t():
+            executor = ClaudeSDKExecutor(
+                permission_mode="auto", native_tools=["WebSearch", "WebFetch"]
+            )
+            captured = {}
+
+            async def fake_get_or_create_client(sdk, *, session_key, options, model):
+                captured["tools"] = options.tools
+                captured["allowed_tools"] = options.allowed_tools
+                raise RuntimeError("stop after options build")
+
+            with (
+                patch.dict(os.environ),
+                patch.object(
+                    executor, "_get_or_create_client", side_effect=fake_get_or_create_client
+                ),
+            ):
+                os.environ.pop("ANTHROPIC_BASE_URL", None)
+                with self.assertRaises(RuntimeError):
+                    async for _ in executor.run_turn([{"role": "user", "content": "hi"}], [], ""):
+                        pass
+
+            self.assertEqual(captured["tools"], ["Skill", "ToolSearch", "WebSearch", "WebFetch"])
+            self.assertEqual(captured["allowed_tools"], [])
+
+        _run(_t())
+
+    def test_native_tool_skips_prompt_in_auto_mode_but_not_policy(self):
+        """In auto mode an opted-in built-in is allowed without a human
+        prompt once policy allows it; a policy DENY still blocks it, and
+        other tools still prompt."""
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+
+        async def _t():
+            executor = self._make_executor(permission_mode="auto")
+            executor._native_tools = ("WebSearch",)
+            evaluator = AsyncMock(return_value=self._verdict("POLICY_ACTION_ALLOW"))
+            executor._policy_evaluator = evaluator
+            elicit = AsyncMock(return_value=True)
+            executor._elicitation_handler = elicit
+
+            allowed = await executor._can_use_tool_gate(
+                "WebSearch", {"query": "x"}, self._perm_ctx()
+            )
+            self.assertIsInstance(allowed, PermissionResultAllow)
+            evaluator.assert_awaited_once()
+            elicit.assert_not_awaited()
+
+            evaluator.return_value = self._verdict("POLICY_ACTION_DENY", reason="no search")
+            denied = await executor._can_use_tool_gate(
+                "WebSearch", {"query": "x"}, self._perm_ctx()
+            )
+            self.assertIsInstance(denied, PermissionResultDeny)
+            self.assertEqual(denied.message, "no search")
+
+            evaluator.return_value = self._verdict("POLICY_ACTION_ALLOW")
+            await executor._can_use_tool_gate("mcp__github__issue_read", {}, self._perm_ctx())
+            elicit.assert_awaited_once()
+
+        _run(_t())
+
+    def test_native_tool_still_prompts_outside_auto_mode(self):
+        """Pre-approval is limited to auto mode; default mode keeps the
+        human-consent prompt for opted-in built-ins."""
+
+        async def _t():
+            executor = self._make_executor(permission_mode="default")
+            executor._native_tools = ("WebSearch",)
+            elicit = AsyncMock(return_value=True)
+            executor._elicitation_handler = elicit
+
+            await executor._can_use_tool_gate("WebSearch", {"query": "x"}, self._perm_ctx())
+
+            elicit.assert_awaited_once_with("WebSearch", {"query": "x"})
 
         _run(_t())
 

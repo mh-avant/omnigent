@@ -41,6 +41,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, NamedTuple, Protocol, TypeAlias, cast
+from urllib.parse import urlparse
 
 from omnigent._platform import resolve_cli_binary, stable_user_id
 from omnigent.claude_paths import claude_config_dir, claude_json_path
@@ -63,6 +64,7 @@ from omnigent.models.claude_model_vocabulary import (
     served_canonical_overrides,
 )
 from omnigent.models.model_metadata import concrete_reported_model
+from omnigent.process_logging import env_truthy
 from omnigent.runtime.mcp_tool_result import decode_mcp_image_result
 from omnigent.spec.types import RetryPolicy
 from omnigent.util.json_serialization import json_dumps_transport_safe
@@ -772,6 +774,40 @@ def _terminate_process_tree(process: _Process | None) -> None:
 
 def _kill_process_tree(process: _Process | None) -> None:
     _proc.kill_tree(process)
+
+
+#: Env flags that put Claude Code in a cloud-provider mode where it gates
+#: WebSearch itself and ignores ``ANTHROPIC_BASE_URL``.
+_CLAUDE_CLOUD_PROVIDER_FLAG_ENVS: tuple[str, ...] = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
+
+
+def _native_tools_for_endpoint(native_tools: Sequence[str], cli_env: dict[str, str]) -> list[str]:
+    """Drop native tools the CLI's endpoint cannot serve.
+
+    Claude Code runs WebSearch as a nested ``web_search`` request to
+    ``ANTHROPIC_BASE_URL``, which non-Anthropic gateways reject. Cloud-provider
+    modes gate the tool themselves. ``cli_env`` overrides the inherited env,
+    as it does for the CLI.
+
+    :param native_tools: Opted-in tool names, e.g. ``("WebSearch", "WebFetch")``.
+    :param cli_env: The env passed to the CLI via ``ClaudeAgentOptions.env``.
+    :returns: The tools to expose, in their original order.
+    """
+
+    def effective(name: str) -> str | None:
+        return cli_env.get(name) or os.environ.get(name) or None
+
+    if any(env_truthy(effective(name)) for name in _CLAUDE_CLOUD_PROVIDER_FLAG_ENVS):
+        return list(native_tools)
+    base_url = effective("ANTHROPIC_BASE_URL")
+    host = (urlparse(base_url).hostname or "").lower() if base_url else ""
+    if not base_url or host == "anthropic.com" or host.endswith(".anthropic.com"):
+        return list(native_tools)
+    return [name for name in native_tools if name != "WebSearch"]
 
 
 @contextmanager
@@ -1641,6 +1677,7 @@ class ClaudeSDKExecutor(Executor):
         skills_filter: str | list[str] = "all",
         api_key_helper: str | None = None,
         system_prompt_preset: str | None = None,
+        native_tools: list[str] | None = None,
     ) -> None:
         """Create a ClaudeSDKExecutor.
 
@@ -1716,6 +1753,10 @@ class ClaudeSDKExecutor(Executor):
                 Injected into ``_extra_env`` as
                 :data:`_CLAUDE_API_KEY_HELPER_ENV_KEY` so it reaches
                 the SDK's ``settings.apiKeyHelper`` option at turn time.
+            native_tools: Claude Code built-in tools to expose, e.g.
+                ``["WebSearch", "WebFetch"]``. They run inside the CLI,
+                still pass the TOOL_CALL policy gate, and are pre-approved
+                in ``auto`` mode like Omnigent's own tools.
         """
         # Fail loud: a ``databricks-*`` model requires the gateway transport.
         if not gateway and model is not None and model.startswith("databricks-"):
@@ -1745,6 +1786,7 @@ class ClaudeSDKExecutor(Executor):
         self._bundle_dir = bundle_dir
         self._agent_name = agent_name
         self._skills_filter = skills_filter
+        self._native_tools: tuple[str, ...] = tuple(native_tools or ())
         # Write the bundle's plugin manifest now (idempotent) so that
         # ``--plugin-dir <bundle>`` produces clean
         # ``<agent-name>:<skill-name>`` labels in Claude's skill
@@ -2537,6 +2579,11 @@ class ClaudeSDKExecutor(Executor):
         # never prompt; otherwise defer to the elicitation gate.
         if self._permission_mode == "bypassPermissions" or self._elicitation_handler is None:
             return PermissionResultAllow()
+        # Opted-in built-ins are pre-approved in auto mode, like the
+        # ``mcp__omnigent__*`` tools in ``allowed_tools``. They stay off
+        # ``allowed_tools`` because that would skip the policy gate above.
+        if self._permission_mode == "auto" and tool_name in self._native_tools:
+            return PermissionResultAllow()
         return await self._can_use_tool_for_permission(tool_name, tool_input, perm_ctx)
 
     async def run_turn(
@@ -2707,8 +2754,13 @@ class ClaudeSDKExecutor(Executor):
         # OS-environment tools are provided via Omnigent ``sys_os_*``
         # MCP tools (declared via ``os_env`` in the spec), not the
         # SDK's native Bash/Read/Edit/Write. Keep Skill and ToolSearch in
-        # the base set so MCP definitions can be discovered on demand.
-        base_tools: list[str] = ["Skill", "ToolSearch"]
+        # the base set so MCP definitions can be discovered on demand, plus
+        # any built-ins the spec opted into (``native_tools``).
+        base_tools: list[str] = [
+            "Skill",
+            "ToolSearch",
+            *_native_tools_for_endpoint(self._native_tools, env),
+        ]
         # Translate the spec's host-skill filter into the SDK
         # options. Falls back to ``"all"`` semantics when the
         # field is malformed (the parser already validates, so
