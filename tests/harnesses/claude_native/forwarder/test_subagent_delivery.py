@@ -1057,6 +1057,7 @@ async def test_concurrent_subagent_502s_recover_without_phantom_completion(
                     "message": {
                         "role": "assistant",
                         "content": [{"type": "text", "text": str(index)}],
+                        "stop_reason": "end_turn",
                     },
                 }
             ],

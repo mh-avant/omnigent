@@ -696,6 +696,7 @@ async def test_subagent_idle_observation_preserves_timing_and_deduplication(
                             "message": {
                                 "role": "assistant",
                                 "content": [{"type": "text", "text": f"working {cycle}"}],
+                                "stop_reason": "end_turn",
                             },
                         }
                     )
@@ -1144,3 +1145,88 @@ async def test_parent_output_forwards_while_child_history_is_blocked(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+def _tool_call(name: str, call_id: str) -> dict[str, Any]:
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": call_id, "name": name, "input": {}}],
+            "stop_reason": "tool_use",
+        },
+    }
+
+
+def _tool_result(call_id: str, output: str = "ok") -> dict[str, Any]:
+    return {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": call_id, "content": output}],
+        },
+    }
+
+
+def _reply(stop_reason: str | None) -> dict[str, Any]:
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Done"}],
+            "stop_reason": stop_reason,
+        },
+    }
+
+
+_STALLED_S = forwarder._SUBAGENT_STALLED_MODEL_TURN_S + 1
+
+
+@pytest.mark.parametrize(
+    "records,quiet_s,ended",
+    [
+        (
+            [_tool_call("Bash", "t1"), {"type": "user", "isMeta": True, "message": {}}],
+            _STALLED_S,
+            False,
+        ),
+        ([_reply("end_turn"), {"type": "attachment"}], 6.0, True),
+        ([_reply(None)], 60.0, False),
+        ([_reply(None)], _STALLED_S, True),
+        ([_tool_call("Bash", "t1"), _tool_result("t1")], 60.0, False),
+        ([_tool_call("Bash", "t1"), _tool_result("t1", "x" * 200_000)], 60.0, False),
+        ([_tool_call("SubagentHandback", "h1"), _tool_result("h1")], 6.0, True),
+        (
+            [
+                _tool_call("Bash", "t1"),
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": "[Request interrupted by user]"},
+                },
+            ],
+            6.0,
+            True,
+        ),
+        ([], 6.0, True),
+    ],
+    ids=[
+        "pending-tool",
+        "final-reply",
+        "streaming-reply",
+        "stalled-reply",
+        "awaiting-model",
+        "large-tool-output",
+        "handback",
+        "interrupted",
+        "no-messages",
+    ],
+)
+def test_quiet_subagent_is_idle_only_once_its_turn_ends(
+    tmp_path: Path, records: list[dict[str, Any]], quiet_s: float, ended: bool
+) -> None:
+    """A quiet child inside a tool call or awaiting its model is still working."""
+    transcript = tmp_path / "agent-worker.jsonl"
+    transcript.write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+    assert forwarder._subagent_turn_has_ended(transcript, quiet_s) is ended

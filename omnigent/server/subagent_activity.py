@@ -317,6 +317,22 @@ def claude_subagent_completion_markers(
     ]
 
 
+def _settle_returned_claude_child_status(child_id: str, status: str) -> None:
+    """End a mirrored child's Working state once its parent holds the result.
+
+    The forwarder reports idle only when the child's transcript shows its turn
+    ended, which a child killed mid-tool never writes.
+    """
+    from omnigent.server.routes._sessions.helpers import _publish_status, _session_status_cache
+
+    if _session_status_cache.get(child_id) not in ("running", "waiting"):
+        return
+    if status == "failed":
+        _publish_status(child_id, "failed", failure_origin="claude_subagent_result")
+    else:
+        _publish_status(child_id, "idle")
+
+
 async def _record_claude_subagent_return(
     parent_id: str,
     item: NewConversationItem | ConversationItem,
@@ -347,6 +363,9 @@ async def _record_claude_subagent_return(
                     turn_id=child.labels.get("omnigent.claude_native.tool_use_id") or child.id,
                     status=status,
                 )
+                # A retried result may predate a resumed run of the same child.
+                if not (isinstance(item, ConversationItem) and item.deduplicated):
+                    _settle_returned_claude_child_status(child.id, status)
         if not page.has_more or page.last_id is None:
             return
         after = page.last_id

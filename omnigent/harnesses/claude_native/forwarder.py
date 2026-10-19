@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import functools
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Literal
 
 import httpx
 
@@ -123,6 +125,16 @@ _MAX_SEEN_DELTA_KEYS = 5000
 # Seconds without transcript activity before reporting an idle observation.
 # This heuristic does not establish that the sub-agent has completed.
 _SUBAGENT_IDLE_THRESHOLD_S = 5.0
+# A quiet child still awaiting a model reply after this long is reported idle:
+# a live model call keeps writing records well within it.
+_SUBAGENT_STALLED_MODEL_TURN_S = 600.0
+# Claude's built-in tool a background sub-agent ends its run with.
+_SUBAGENT_HANDBACK_TOOL_NAME = "SubagentHandback"
+_USER_INTERRUPT_PREFIX = "[Request interrupted by user"
+# Tail window for classifying a quiet child's turn; it grows until a message
+# record fits, up to the cap.
+_SUBAGENT_TAIL_INITIAL_BYTES = 64 * 1024
+_SUBAGENT_TAIL_MAX_BYTES = 8 * 1024 * 1024
 
 # Meta-file glob inside ``~/.claude/projects/<encoded>/<session>/subagents/``.
 # One per Claude Task-tool subagent or in-process teammate; appears alongside
@@ -135,6 +147,99 @@ _IN_PROCESS_TEAMMATE_TASK_KIND = "in_process_teammate"
 # stamped into each ``agent-<id>.meta.json``. Reuse the router's canonical set so
 # both the current ``Agent`` name and the still-supported ``Task`` alias match.
 _SUBAGENT_SPAWN_TOOL_NAMES = frozenset(AGENT_TOOL_NAMES)
+
+
+def _tail_message_records(jsonl_path: Path, size: int) -> list[dict[str, object]]:
+    """Read the last non-meta user/assistant records of a Claude transcript."""
+    window = _SUBAGENT_TAIL_INITIAL_BYTES
+    with jsonl_path.open("rb") as handle:
+        while True:
+            start = max(0, size - window)
+            handle.seek(start)
+            lines = handle.read(size - start).split(b"\n")
+            if start > 0:
+                lines = lines[1:]  # the first line is cut off by the window
+            messages: list[dict[str, object]] = []
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if (
+                    isinstance(record, dict)
+                    and record.get("type") in ("user", "assistant")
+                    and not record.get("isMeta")
+                ):
+                    messages.append(record)
+            if messages or start == 0 or window >= _SUBAGENT_TAIL_MAX_BYTES:
+                return messages
+            window *= 4
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_subagent_turn_phase(
+    jsonl_path: Path, size: int, mtime_ns: int
+) -> Literal["ended", "tool", "model"] | None:
+    """Classify a transcript version; ``size``/``mtime_ns`` key the cache."""
+    del mtime_ns
+    messages = _tail_message_records(jsonl_path, size)
+    if not messages:
+        return None
+    tool_names: dict[object, object] = {}
+    for record in messages:
+        message = record.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tool_names[block.get("id")] = block.get("name")
+    last = messages[-1]
+    message = last.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    blocks = (
+        [block for block in content if isinstance(block, dict)]
+        if isinstance(content, list)
+        else []
+    )
+    if last.get("type") == "assistant":
+        if any(block.get("type") == "tool_use" for block in blocks):
+            return "tool"
+        stop_reason = message.get("stop_reason")
+        # Claude writes each content block as its own record; only the last
+        # block of a message carries the stop reason.
+        if isinstance(stop_reason, str) and stop_reason not in ("tool_use", "pause_turn"):
+            return "ended"
+        return "model"
+    texts = [content] if isinstance(content, str) else [block.get("text") for block in blocks]
+    if any(isinstance(text, str) and text.startswith(_USER_INTERRUPT_PREFIX) for text in texts):
+        return "ended"
+    if any(
+        block.get("type") == "tool_result"
+        and tool_names.get(block.get("tool_use_id")) == _SUBAGENT_HANDBACK_TOOL_NAME
+        for block in blocks
+    ):
+        return "ended"
+    return "model"
+
+
+def _subagent_turn_has_ended(jsonl_path: Path, quiet_s: float) -> bool:
+    """Whether a quiet child has finished its turn rather than paused inside it.
+
+    A pending tool call keeps the child working however long it runs. A turn
+    awaiting a model reply counts as ended only once it has stalled. A
+    transcript with no readable message record keeps the plain lull rule.
+    """
+    try:
+        stat = jsonl_path.stat()
+        phase = _cached_subagent_turn_phase(jsonl_path, stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return True
+    if phase == "tool":
+        return False
+    if phase == "model":
+        return quiet_s > _SUBAGENT_STALLED_MODEL_TURN_S
+    return True
 
 
 def _subagent_id_from_meta_path(meta_path: Path) -> str:
@@ -2495,9 +2600,14 @@ async def _forward_one_subagent(
         and new_entry.last_activity_ts is not None
         and now - new_entry.last_activity_ts > _SUBAGENT_IDLE_THRESHOLD_S
     ):
-        # A transcript lull is an idle observation, not an authoritative
-        # completion: the child may still be in a long-running tool call.
-        desired_status = "failed" if new_entry.delivery_error else "idle"
+        # A lull is idle only once the transcript shows the turn ended; a child
+        # inside a long tool call stays running. Idle is not a completion.
+        if new_entry.delivery_error:
+            desired_status = "failed"
+        elif new_entry.last_status != "idle" and await asyncio.to_thread(
+            _subagent_turn_has_ended, jsonl_path, now - new_entry.last_activity_ts
+        ):
+            desired_status = "idle"
     if desired_status is None or desired_status == new_entry.last_status:
         return
     retry_key = f"subagent_status:{entry.child_conversation_id}"

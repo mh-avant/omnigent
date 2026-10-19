@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import event
 
 from omnigent.entities import MessageData, NewConversationItem
+from omnigent.server.routes._sessions.helpers import _session_status_cache
 from omnigent.server.routes._sessions.orchestration import (
     _persist_external_conversation_item,
     _persist_external_conversation_items,
@@ -124,6 +125,7 @@ def _message(text: str) -> dict[str, Any]:
 @pytest.mark.asyncio
 async def test_claude_completion_survives_retries_and_late_child_discovery(
     db_uri: str,
+    monkeypatch: pytest.MonkeyPatch,
     data: dict[str, Any],
     return_id: str | None,
     expected: str | None,
@@ -149,6 +151,10 @@ async def test_claude_completion_survives_retries_and_late_child_discovery(
         return child.id
 
     child_id = None if late else await register_child()
+    publish_status = Mock()
+    monkeypatch.setattr("omnigent.server.routes._sessions.helpers._publish_status", publish_status)
+    if child_id is not None:
+        monkeypatch.setitem(_session_status_cache, child_id, "running")
     item_type = "function_call_output" if "call_id" in data else "message"
     body = SessionEventInput(
         type="external_conversation_item",
@@ -184,6 +190,11 @@ async def test_claude_completion_survives_retries_and_late_child_discovery(
         assert store.list_items(parent.id).data == []
     for _ in range(2):
         await deliver()
+    # A live result ends a running child's turn once; a retry or late child does not.
+    settled = {"completed": "idle", "failed": "failed"}.get(expected or "")
+    assert [call.args for call in publish_status.call_args_list] == (
+        [(child_id, settled)] if settled and not late else []
+    )
     [persisted] = store.list_items(parent.id, type=item_type).data
     assert persisted.data.subagent_return_id == return_id
     if late:
