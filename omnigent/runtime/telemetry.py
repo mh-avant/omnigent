@@ -56,6 +56,13 @@ _HEX_LEN = 32
 SENTINEL_PARENT_SPAN_ID = 0x1000000000000001
 
 _capture_content: bool = False
+_capture_user: bool = False
+# Name reported as `enduser.id` for the single-user "local" identity.
+_local_user: str | None = None
+# Runner and harness processes fall back to their own OMNIGENT_RUNNER_ID for
+# `omnigent.runner.id`; other processes only stamp a context-bound runner.
+_runner_process: bool = False
+_RUNNER_SERVICE_NAMES = frozenset({"omni-runner", "omni-harness"})
 _initialized: bool = False
 _metrics_initialized: bool = False
 _logs_initialized: bool = False
@@ -101,6 +108,36 @@ def should_capture_content() -> bool:
     :returns: ``True`` when content capture is enabled.
     """
     return _capture_content
+
+
+def should_capture_user() -> bool:
+    """
+    Return whether the acting user's id should be stamped on spans.
+
+    Controlled by ``OMNIGENT_OTEL_CAPTURE_USER``. Off by default because
+    the id (``enduser.id``) is usually an email address.
+
+    :returns: ``True`` when user attribution is enabled.
+    """
+    return _capture_user
+
+
+def _attributed_user(user_id: str | None) -> str | None:
+    """
+    Return the ``enduser.id`` value for *user_id*.
+
+    The single-user ``"local"`` identity is reported as
+    ``OMNIGENT_OTEL_LOCAL_USER`` when set, so solo installs that export
+    to a shared collector stay attributable.
+
+    :param user_id: Authenticated or process-owner id, e.g. ``"local"``.
+    :returns: The id to stamp, or ``None``.
+    """
+    from omnigent.server.auth import RESERVED_USER_LOCAL
+
+    if user_id == RESERVED_USER_LOCAL and _local_user:
+        return _local_user
+    return user_id
 
 
 def telemetry_enabled() -> bool:
@@ -266,6 +303,29 @@ def set_session_id(session_id: str | None) -> None:
         pass
 
 
+def set_request_user(user_id: str | None) -> None:
+    """
+    Stamp ``enduser.id`` on the active server span once auth resolves the user.
+
+    The FastAPI server span starts before the auth middleware runs, so the
+    user span processor's ``on_start`` misses it; child spans are covered by
+    the processor. A no-op unless ``OMNIGENT_OTEL_CAPTURE_USER`` is set.
+
+    :param user_id: Authenticated user id, e.g. ``"alice@example.com"``.
+    """
+    if not user_id or not should_capture_user():
+        return
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        attributed = _attributed_user(user_id)
+        if attributed and span is not None and span.is_recording():
+            span.set_attribute("enduser.id", attributed)
+    except Exception:  # pragma: no cover - telemetry must never break requests
+        pass
+
+
 def current_session_id() -> str | None:
     """
     Return the session id bound in the current context, or ``None``.
@@ -346,6 +406,29 @@ def make_span_attribute_processor(attribute_key: str, get_value: Callable[[], st
 def _make_session_id_processor() -> Any:
     """Span processor stamping ``session.id`` from :data:`_session_id_var`."""
     return make_span_attribute_processor("session.id", _session_id_var.get)
+
+
+def _make_user_id_processor() -> Any:
+    """Span processor stamping ``enduser.id`` from the debug-log user binding."""
+    from omnigent.debug_logging import current_user_id
+
+    def span_user_id() -> str | None:
+        return _attributed_user(current_user_id()) if _capture_user else None
+
+    return make_span_attribute_processor("enduser.id", span_user_id)
+
+
+def _make_runner_id_processor() -> Any:
+    """Span processor stamping ``omnigent.runner.id`` from the debug-log runner binding."""
+    from omnigent.debug_logging import current_runner_id
+    from omnigent.runner.identity import RUNNER_ID_ENV_VAR
+
+    def span_runner_id() -> str | None:
+        if bound := current_runner_id():
+            return bound
+        return os.environ.get(RUNNER_ID_ENV_VAR) if _runner_process else None
+
+    return make_span_attribute_processor("omnigent.runner.id", span_runner_id)
 
 
 def _make_active_skill_processor() -> Any:
@@ -1075,6 +1158,10 @@ def _init_otel_traces(endpoint: str) -> None:
             provider.add_span_processor(_make_session_id_processor())
             # Tag every span with the skill active in the turn, if any.
             provider.add_span_processor(_make_active_skill_processor())
+            # Attribute every span to its runner, and to the acting user when
+            # OMNIGENT_OTEL_CAPTURE_USER opts in.
+            provider.add_span_processor(_make_runner_id_processor())
+            provider.add_span_processor(_make_user_id_processor())
             provider.add_span_processor(BatchSpanProcessor(_create_otlp_span_exporter()))
             trace.set_tracer_provider(provider)
 
@@ -1267,7 +1354,7 @@ def init(service_name: str | None = None) -> None:
       ``TracerProvider`` externally get spans automatically. The
       default OTel no-op provider discards spans silently.
     """
-    global _capture_content, _initialized
+    global _capture_content, _capture_user, _initialized, _local_user, _runner_process
 
     if not telemetry_enabled():
         # Master opt-in off (the default): stay fully inert — no provider, no
@@ -1276,9 +1363,13 @@ def init(service_name: str | None = None) -> None:
         return
 
     _capture_content = _env_bool("OMNIGENT_OTEL_CAPTURE_CONTENT")
+    _capture_user = _env_bool("OMNIGENT_OTEL_CAPTURE_USER")
+    _local_user = os.environ.get("OMNIGENT_OTEL_LOCAL_USER", "").strip() or None
 
     if _initialized:
         return
+
+    _runner_process = service_name in _RUNNER_SERVICE_NAMES
 
     # Per-component service identity. The trace / metrics / logs
     # providers below all read OTEL_SERVICE_NAME when they build their

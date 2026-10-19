@@ -733,13 +733,24 @@ def test_init_respects_capture_content_flag(
     monkeypatch.setattr(telemetry, "_initialized", False)
     monkeypatch.setattr(telemetry, "_metrics_initialized", False)
     monkeypatch.setattr(telemetry, "_logs_initialized", False)
+    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+    monkeypatch.setattr(telemetry, "_runner_process", False)
     monkeypatch.setenv("OMNIGENT_OTEL_CAPTURE_CONTENT", "true")
-    telemetry.init()
+    monkeypatch.setenv("OMNIGENT_OTEL_CAPTURE_USER", "true")
+    monkeypatch.setenv("OMNIGENT_OTEL_LOCAL_USER", " bob@example.com ")
+    telemetry.init("omni-runner")
     assert telemetry.should_capture_content() is True
+    assert telemetry.should_capture_user() is True
+    assert telemetry._local_user == "bob@example.com"
+    assert telemetry._runner_process is True
 
     monkeypatch.setenv("OMNIGENT_OTEL_CAPTURE_CONTENT", "false")
+    monkeypatch.delenv("OMNIGENT_OTEL_CAPTURE_USER")
+    monkeypatch.delenv("OMNIGENT_OTEL_LOCAL_USER")
     telemetry.init()
     assert telemetry.should_capture_content() is False
+    assert telemetry.should_capture_user() is False
+    assert telemetry._local_user is None
 
 
 def test_init_disabled_by_default_is_noop(
@@ -898,6 +909,112 @@ def test_active_skill_processor_stamps_spans_while_active() -> None:
     assert spans["tool:Read"].attributes.get("omnigent.skill.active") == "code-review"
     assert "omnigent.skill.active" not in (spans["tool:after"].attributes or {})
     assert telemetry._active_skill_var.get() is None
+
+
+def test_runner_id_processor_uses_bound_runner_then_runner_process_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Spans carry ``omnigent.runner.id`` from the runner bound to the request;
+    only runner/harness processes fall back to their own ``OMNIGENT_RUNNER_ID``.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    from omnigent.debug_logging import runner_log_scope
+    from omnigent.runner.identity import RUNNER_ID_ENV_VAR
+
+    monkeypatch.setenv(RUNNER_ID_ENV_VAR, "runner-from-env")
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(telemetry._make_runner_id_processor())
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+
+    monkeypatch.setattr(telemetry, "_runner_process", False)
+    with runner_log_scope(None, "runner-bound"):
+        with tracer.start_as_current_span("server.bound"):
+            pass
+    with tracer.start_as_current_span("server.unbound"):
+        pass
+    monkeypatch.setattr(telemetry, "_runner_process", True)
+    with tracer.start_as_current_span("runner.unbound"):
+        pass
+
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    assert spans["server.bound"].attributes.get("omnigent.runner.id") == "runner-bound"
+    assert "omnigent.runner.id" not in (spans["server.unbound"].attributes or {})
+    assert spans["runner.unbound"].attributes.get("omnigent.runner.id") == "runner-from-env"
+
+
+def test_user_id_processor_stamps_enduser_only_when_opted_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ``enduser.id`` is PII, so the processor stamps the bound user only while
+    ``OMNIGENT_OTEL_CAPTURE_USER`` is on.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    from omnigent.debug_logging import USER_ID_ENV_VAR, current_user_id_scope
+
+    monkeypatch.delenv(USER_ID_ENV_VAR, raising=False)
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(telemetry._make_user_id_processor())
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+
+    with current_user_id_scope("alice@example.com"):
+        monkeypatch.setattr(telemetry, "_capture_user", False)
+        with tracer.start_as_current_span("capture.off"):
+            pass
+        monkeypatch.setattr(telemetry, "_capture_user", True)
+        with tracer.start_as_current_span("capture.on"):
+            with tracer.start_as_current_span("capture.on.child"):
+                pass
+    with current_user_id_scope("local"):
+        monkeypatch.setattr(telemetry, "_local_user", None)
+        with tracer.start_as_current_span("local.unnamed"):
+            pass
+        monkeypatch.setattr(telemetry, "_local_user", "bob@example.com")
+        with tracer.start_as_current_span("local.named"):
+            pass
+
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    assert "enduser.id" not in (spans["capture.off"].attributes or {})
+    assert spans["capture.on"].attributes.get("enduser.id") == "alice@example.com"
+    assert spans["capture.on.child"].attributes.get("enduser.id") == "alice@example.com"
+    assert spans["local.unnamed"].attributes.get("enduser.id") == "local"
+    assert spans["local.named"].attributes.get("enduser.id") == "bob@example.com"
+
+
+def test_set_request_user_stamps_current_span_when_opted_in(
+    in_memory_exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ``set_request_user`` tags the already-started server span, which the
+    processor misses because auth resolves the user after the span starts.
+
+    :param in_memory_exporter: In-memory span exporter fixture.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    tracer = otel_trace.get_tracer("test")
+    monkeypatch.setattr(telemetry, "_capture_user", False)
+    with tracer.start_as_current_span("GET /v1/sessions off"):
+        telemetry.set_request_user("alice@example.com")
+    monkeypatch.setattr(telemetry, "_capture_user", True)
+    with tracer.start_as_current_span("GET /v1/sessions on"):
+        telemetry.set_request_user("alice@example.com")
+        telemetry.set_request_user(None)  # no-op, must not raise or clear
+    monkeypatch.setattr(telemetry, "_local_user", "bob@example.com")
+    with tracer.start_as_current_span("GET /v1/sessions local"):
+        telemetry.set_request_user("local")
+
+    spans = {s.name: s for s in in_memory_exporter.get_finished_spans()}
+    assert "enduser.id" not in (spans["GET /v1/sessions off"].attributes or {})
+    assert spans["GET /v1/sessions on"].attributes.get("enduser.id") == "alice@example.com"
+    assert spans["GET /v1/sessions local"].attributes.get("enduser.id") == "bob@example.com"
 
 
 def test_make_span_attribute_processor_is_generic() -> None:

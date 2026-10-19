@@ -294,6 +294,8 @@ All standard OpenTelemetry env vars; nothing backend-specific in code.
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` (dev) | Always sample locally; ratio-based in prod |
 | `OMNIGENT_OTEL_FASTAPI_INSTRUMENTATION` | `true` | Server/runner HTTP spans + extract |
 | `OMNIGENT_OTEL_CAPTURE_CONTENT` | `true` (dev only) | Include payloads on spans; **off in prod** (PII) |
+| `OMNIGENT_OTEL_CAPTURE_USER` | off | Stamp the acting user as `enduser.id` on every span (PII; usually an email). Spans always carry `omnigent.runner.id` when a runner is known. |
+| `OMNIGENT_OTEL_LOCAL_USER` | unset | With `OMNIGENT_OTEL_CAPTURE_USER`, report the single-user `local` identity under this name, e.g. `alice@example.com`, so solo installs stay attributable in a shared collector. |
 
 Telemetry is **opt-in**: nothing is instrumented and no spans are created unless
 `OMNIGENT_TELEMETRY_ENABLED` is truthy, so a default install is never burdened with
