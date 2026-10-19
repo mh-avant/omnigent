@@ -61,7 +61,11 @@ import {
 } from "./conversationItems";
 import { nativePolicyNameForAgentName } from "./nativeCodingAgents";
 import { routingExtrasFromWire } from "./routingDecision";
-import { isClaudeAgentMessageContent, taskNotificationMarkerContent } from "./systemMessage";
+import {
+  coordinatorMessageMarkerContent,
+  isClaudeAgentMessageContent,
+  taskNotificationMarkerContent,
+} from "./systemMessage";
 import { readSubagentActivity } from "./subagentActivity";
 
 // Claude built-ins whose call is a question TO the user rather than work
@@ -266,7 +270,8 @@ function itemToBlock(item: ConversationItem, agentName?: string | null): AnyBloc
     }
   }
   if (isMessageItem(item) && item.is_meta === true) {
-    return null;
+    const marker = item.role === "user" ? coordinatorMessageMarkerContent(item.content) : null;
+    return marker === null ? null : { ...userMessageToBlock(item), content: marker };
   }
   if (isMessageItem(item) && item.role === "user") {
     // Hide the compaction summary message injected by Claude Code

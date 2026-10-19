@@ -168,6 +168,32 @@ describe("itemsToBlocks — flat shape", () => {
     ]);
   });
 
+  it("shows a parent agent's hidden follow-up in the sub-agent chat as a marker", () => {
+    const text =
+      "The coordinator sent a message while you were working:\nReply with: ok\n\n" +
+      "Address this before completing your current task.";
+    const message = (id: string, extra: Partial<ConversationItem>): ConversationItem =>
+      ({
+        id,
+        response_id: `resp_${id}`,
+        type: "message",
+        status: "completed",
+        role: "user",
+        content: [{ type: "input_text", text }],
+        ...extra,
+      }) as ConversationItem;
+
+    const blocks = itemsToBlocks([
+      message("follow_up", { is_meta: true }),
+      message("typed", { user_authored: true }),
+    ]);
+
+    expect(blocks.map((block) => (block as UserMessageBlock).content)).toEqual([
+      [{ type: "input_text", text: "[System: Message from parent agent]\nReply with: ok" }],
+      [{ type: "input_text", text }],
+    ]);
+  });
+
   it("re-labels a Claude Monitor task notification with optional fields omitted", () => {
     const items: ConversationItem[] = [
       userMessage(

@@ -17,6 +17,9 @@ const TEAMMATE_MESSAGE_PREFIXES = [
   "Another Claude session sent a message while you were working:\n",
   "A peer session sent a message while you were working:\n",
 ];
+// Claude's framing of a parent agent's follow-up to one of its sub-agents.
+const COORDINATOR_MESSAGE_PREFIX = "The coordinator sent a message while you were working:\n";
+const COORDINATOR_MESSAGE_GUIDANCE = "Address this before completing your current task.";
 const TEAMMATE_DELIVERY_GUIDANCE = [
   "This came from another Claude session — not typed by your user,",
   'That "other Claude session" is an agent working inside this same session —',
@@ -239,6 +242,29 @@ export function claudeTaskNotificationMarker(text: string): string | null {
   const summary = /<summary>([\s\S]*?)<\/summary>/.exec(text)?.[1]?.trim() ?? "";
   const header = `[System: background task ${taskId} ${status}]`;
   return summary ? `${header}\n${summary}` : header;
+}
+
+/**
+ * System-marker content for a parent agent's follow-up to a Claude sub-agent.
+ * Claude stores it as hidden context, so the child's chat would otherwise show
+ * a reply with no visible prompt.
+ *
+ * :param content: Content of a hidden (``is_meta``) user message.
+ * :returns: One ``input_text`` block carrying the marker, or ``null`` when the
+ *   message is not a parent follow-up.
+ */
+export function coordinatorMessageMarkerContent(
+  content: MessageContentBlock[],
+): MessageContentBlock[] | null {
+  const [block, ...rest] = content;
+  if (block === undefined || rest.length > 0 || !isTextBlock(block)) return null;
+  if (!block.text.startsWith(COORDINATOR_MESSAGE_PREFIX)) return null;
+  let body = block.text.slice(COORDINATOR_MESSAGE_PREFIX.length).trim();
+  if (body.endsWith(COORDINATOR_MESSAGE_GUIDANCE)) {
+    body = body.slice(0, -COORDINATOR_MESSAGE_GUIDANCE.length).trim();
+  }
+  const header = "[System: Message from parent agent]";
+  return [{ type: "input_text", text: body ? `${header}\n${body}` : header }];
 }
 
 /**

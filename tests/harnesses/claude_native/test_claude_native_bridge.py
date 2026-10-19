@@ -1508,6 +1508,31 @@ def test_completion_preserves_hidden_provenance(
         assert response_id == "active"
 
 
+@pytest.mark.parametrize("as_blocks", [False, True])
+@pytest.mark.parametrize("origin", [{"kind": "coordinator"}, None])
+def test_parent_follow_up_reaches_the_child_as_hidden_context(
+    tmp_path: Path, origin: dict[str, str] | None, as_blocks: bool
+) -> None:
+    """A parent's message to its sub-agent is kept; other hidden context is not."""
+    text = (
+        "The coordinator sent a message while you were working:\nReply with: ok\n\n"
+        "Address this before completing your current task."
+    )
+    content = [{"type": "text", "text": text}] if as_blocks else text
+    _, response_id, items = _read_native_user(tmp_path, content, isMeta=True, origin=origin)
+    assert response_id == "active"
+    if origin is None:
+        assert items == []
+        return
+    [item] = items
+    assert item.data == {
+        "role": "user",
+        "is_meta": True,
+        "content": [{"type": "input_text", "text": text}],
+    }
+    assert item.subagent_return_id is None
+
+
 @pytest.mark.parametrize("internal", [False, True])
 def test_mixed_native_blocks_keep_human_text_and_hide_completion_guidance(
     tmp_path: Path, internal: bool
