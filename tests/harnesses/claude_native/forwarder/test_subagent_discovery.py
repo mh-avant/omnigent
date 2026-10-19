@@ -102,6 +102,85 @@ async def test_subagent_watcher_registers_a_task_named_spawn(
     assert state.subagents["a-worker"].parent_subagent_id is None
 
 
+async def test_subagent_watcher_registers_an_in_process_teammate_under_the_lead(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An agent-team teammate has no spawn tool call, so it attaches to the lead.
+
+    Its meta carries ``taskKind: "in_process_teammate"`` and no ``toolUseId``.
+    Registration must not wait on spawn correlation, and a meta missing
+    ``toolUseId`` for any other reason stays unregistered.
+    """
+    bridge_dir = tmp_path / "bridge"
+    transcript_path = tmp_path / "session.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+    subagents_dir = transcript_path.parent / transcript_path.stem / "subagents"
+    subagents_dir.mkdir(parents=True)
+    metas = {
+        "teammate": {
+            "agentType": "differ",
+            "description": "Version-diff pass on findings",
+            "name": "differ",
+            "taskKind": "in_process_teammate",
+            "teamName": "session-c13bb742",
+        },
+        "malformed": {"agentType": "Explore", "description": "no spawn id"},
+    }
+    for subagent_id, meta in metas.items():
+        (subagents_dir / f"agent-{subagent_id}.meta.json").write_text(
+            json.dumps(meta), encoding="utf-8"
+        )
+        (subagents_dir / f"agent-{subagent_id}.jsonl").write_text("", encoding="utf-8")
+
+    def fail_correlation(*_args: Any) -> dict[str, str | None]:
+        raise AssertionError("a teammate alone must not trigger a transcript scan")
+
+    monkeypatch.setattr(forwarder, "_subagent_parents_by_tool_use", fail_correlation)
+    starts: list[tuple[str, dict[str, Any]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("type") != "external_subagent_start":
+            return httpx.Response(202, json={})
+        starts.append((request.url.path, body["data"]))
+        return httpx.Response(
+            202,
+            json={"queued": False, "child_session_id": f"conv_{body['data']['subagent_id']}"},
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://ap",
+    ) as client:
+        state = await forwarder._forward_available_subagents(
+            client=client,
+            parent_session_id="conv_root",
+            bridge_dir=bridge_dir,
+            transcript_path=transcript_path,
+            state=forwarder.SubagentForwardState(subagents={}),
+            agent_name="claude-native-ui",
+            start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+        )
+
+    assert starts == [
+        (
+            "/v1/sessions/conv_root/events",
+            {
+                "subagent_id": "teammate",
+                "agent_type": "differ",
+                "description": "differ: Version-diff pass on findings",
+                "tool_use_id": "teammate:teammate",
+            },
+        )
+    ]
+    assert state.subagents["teammate"].child_conversation_id == "conv_teammate"
+    assert state.subagents["teammate"].parent_subagent_id is None
+    assert "malformed" not in state.subagents
+
+
 async def test_subagent_watcher_posts_external_subagent_start_for_new_meta(
     tmp_path: Path,
 ) -> None:
