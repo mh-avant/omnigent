@@ -7,7 +7,7 @@ import pytest
 from omnigent.cli import _bundle
 from omnigent.inner.bundle_skills import claude_native_skill_args
 from omnigent.runner.tool_dispatch import _execute_skill_tool
-from omnigent.runtime.prompt import build_instructions
+from omnigent.runtime.prompt import ITEM_LABEL_INSTRUCTION, build_instructions
 from omnigent.server.bundles import validate_agent_bundle
 from omnigent.spec import load, materialize_bundle
 from omnigent.tools.builtins.load_skill import LoadSkillTool, list_skill_resources
@@ -62,7 +62,9 @@ def test_resolve_startup_prompt_routes_to_procedures_without_inlining_them() -> 
     tool = LoadSkillTool(spec.skills, skills_filter="none")
     prompt = build_instructions(spec, None, [tool.get_schema()])
 
-    assert len(prompt.split()) < 1500
+    # The item-label rules are framework text appended to every agent, not resolve-agent content.
+    assert ITEM_LABEL_INSTRUCTION in prompt
+    assert len(prompt.split()) - len(ITEM_LABEL_INSTRUCTION.split()) < 1500
     assert spec.skills
     for skill in spec.skills:
         assert skill.name in prompt

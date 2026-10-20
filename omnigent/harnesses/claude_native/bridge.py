@@ -2841,8 +2841,7 @@ def augment_claude_args(
             str(settings_path),
         ]
     )
-    if append_system_prompt:
-        args.extend(["--append-system-prompt", append_system_prompt])
+    args = _merge_append_system_prompt(args, append_system_prompt)
     # Imported here: bundle-skills parsing rides the spec graph; launch-only.
     from omnigent.inner.bundle_skills import claude_agents_skill_args, claude_native_skill_args
 
@@ -2900,6 +2899,36 @@ def _args_request_bypass_permissions(args: tuple[str, ...]) -> bool:
     return "--dangerously-skip-permissions" in args or (
         _arg_value(args, "--permission-mode") == "bypassPermissions"
     )
+
+
+def _merge_append_system_prompt(args: list[str], addition: str | None) -> list[str]:
+    """Append ``addition`` to the ``--append-system-prompt`` text in ``args``.
+
+    Claude Code honours only the last ``--append-system-prompt``, so a second
+    flag would silently replace a user-supplied value; fold both into one flag.
+
+    :param args: Claude CLI argument list.
+    :param addition: Omnigent's text to append, or ``None`` to leave ``args`` as is.
+    :returns: ``args`` with at most one ``--append-system-prompt`` flag.
+    """
+    if not addition:
+        return args
+    flag = "--append-system-prompt"
+    existing = _arg_value(tuple(args), flag)
+    merged: list[str] = []
+    skip_value = False
+    for idx, arg in enumerate(args):
+        if skip_value:
+            skip_value = False
+            continue
+        if arg.startswith(f"{flag}="):
+            continue
+        if arg == flag:
+            skip_value = idx + 1 < len(args) and not args[idx + 1].startswith("--")
+            continue
+        merged.append(arg)
+    merged.extend([flag, f"{existing}\n\n{addition}" if existing else addition])
+    return merged
 
 
 def _merge_allowed_tools(args: list[str], extra: tuple[str, ...]) -> list[str]:

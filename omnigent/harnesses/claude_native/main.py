@@ -25,6 +25,7 @@ import uuid
 
 from omnigent.claude_paths import claude_config_dir
 from omnigent.llms.adapters._content import redact_binary_payloads
+from omnigent.runtime.prompt import native_startup_instructions
 from omnigent.runtime.tool_result_replay import (
     blocks_from_parsed_list,
     image_payloads_in_blocks,
@@ -3765,7 +3766,9 @@ def _run_with_local_server(
                     claude_config=claude_config,
                     startup_profiler=startup_profiler,
                     startup_progress=progress,
-                    append_system_prompt=_wrapper_spec_raw_instructions(spec_path),
+                    append_system_prompt=native_startup_instructions(
+                        _wrapper_spec_raw_instructions(spec_path)
+                    ),
                 )
             )
             _mark_startup_step(
@@ -5095,7 +5098,8 @@ async def _prepare_claude_terminal(
         marks. ``None`` disables output.
     :param startup_progress: Optional user-visible progress renderer,
         e.g. a handle from :func:`runner_startup_progress`.
-    :param append_system_prompt: Raw author instructions for
+    :param append_system_prompt: Author instructions plus static framework
+        guidance (:func:`native_startup_instructions`) for
         ``--append-system-prompt``, applied on fresh launch and cold
         resume only — the hot-reattach fast path below returns before
         this is used, so it never relaunches or duplicates the flag.
@@ -6331,9 +6335,9 @@ async def _launch_claude_terminal(
     :param bridge_dir: Bridge directory shared with Claude's MCP
         MCP server and the web-chat harness.
     :param claude_config: Optional ucode-derived Claude Code config.
-    :param append_system_prompt: Optional raw ``AgentSpec.instructions``
-        (author-supplied, not framework-composed) for this fresh native
-        session.
+    :param append_system_prompt: Optional author instructions plus static
+        framework guidance (never per-turn framework text) for this fresh
+        native session.
     :param allowed_tools: Optional narrowly scoped Claude tools preapproved
         for this native session.
     :returns: Terminal resource id.
@@ -6510,9 +6514,9 @@ def _claude_terminal_request(
     :param ap_auth_headers: Auth headers for the
         ``PermissionRequest`` command hook.
     :param claude_config: Optional ucode-derived Claude Code config.
-    :param append_system_prompt: Optional raw ``AgentSpec.instructions``
-        (author-supplied, not framework-composed) to append to Claude
-        Code's system prompt.
+    :param append_system_prompt: Optional author instructions plus static
+        framework guidance (never per-turn framework text) to append to
+        Claude Code's system prompt.
     :param allowed_tools: Optional narrowly scoped Claude tools preapproved
         for this native session.
     :returns: JSON body for ``POST /resources/terminals``.

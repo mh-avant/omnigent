@@ -4037,6 +4037,32 @@ def test_augment_claude_args_appends_caller_system_prompt(
     assert args[index + 1] == framework_instruction
 
 
+@pytest.mark.parametrize(
+    "user_args",
+    [
+        ("--append-system-prompt", "User guidance.", "--verbose"),
+        ("--append-system-prompt=User guidance.", "--verbose"),
+    ],
+    ids=["split", "joined"],
+)
+def test_augment_claude_args_merges_caller_system_prompt(
+    tmp_path: Path, user_args: tuple[str, ...]
+) -> None:
+    """Framework text extends a user-supplied system prompt rather than shadowing it."""
+    args = augment_claude_args(
+        user_args,
+        bridge_dir=tmp_path,
+        python_executable="/venv/bin/python",
+        append_system_prompt="Framework guidance.",
+    )
+
+    prompt_flags = [arg for arg in args if arg.startswith("--append-system-prompt")]
+    assert prompt_flags == ["--append-system-prompt"]
+    index = args.index("--append-system-prompt")
+    assert args[index + 1] == "User guidance.\n\nFramework guidance."
+    assert "--verbose" in args
+
+
 def test_augment_claude_args_merges_caller_allowed_tools(tmp_path: Path) -> None:
     """Framework preapproval extends rather than replaces the user's allowlist."""
     args = augment_claude_args(

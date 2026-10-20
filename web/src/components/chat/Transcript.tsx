@@ -31,15 +31,18 @@ import { ArcaShutdownBanner } from "@/components/ArcaShutdownBanner";
 import { useArcaShutdownBanner } from "@/hooks/useArcaShutdownBanner";
 import { useSearchParams } from "@/lib/routing";
 import { MESSAGE_QUERY_PARAM } from "@/lib/messageDeepLink";
+import { ItemLabelIndexContext } from "@/lib/itemLabels";
 import { useMessageDeepLink } from "@/hooks/useMessageDeepLink";
 import { useUserMessageNav } from "@/hooks/useUserMessageNav";
 import { ChatPlanAccordion } from "@/shell/ChatPlanAccordion";
+import { OpenItemsPanel } from "@/components/chat/OpenItemsPanel";
 import { RunnerStartingIndicator, McpStartupIndicator } from "@/pages/ChatIndicators";
 import { CHAT_COLUMN_WIDTH } from "@/pages/chatLayout";
 import {
   type ConversationScroller,
   BubbleView,
   ConversationScrollRefBridge,
+  buildBubbleItemLabelIndex,
   HistoryAutoLoader,
   HistoryLoadingIndicator,
   JumpToTopButton,
@@ -316,14 +319,26 @@ function TranscriptImpl({
   const showWorkingIndicator = shouldShowWorkingIndicator(display.showsWorking, display.bubbles);
   const arcaWarning = useArcaShutdownBanner();
   const showArcaBanner = arcaWarning.showForHost(hostId);
-  const hasPinnedBanner = display.hasTasks || showArcaBanner;
+  const itemLabelIndex = useMemo(
+    () => buildBubbleItemLabelIndex(display.bubbles),
+    [display.bubbles],
+  );
+  const hasOpenItems = itemLabelIndex.enabled && itemLabelIndex.items.size > 0;
+  const hasPinnedBanner = display.hasTasks || hasOpenItems || showArcaBanner;
   return (
-    <>
+    <ItemLabelIndexContext.Provider value={itemLabelIndex}>
       {/* Task tracker pinned above the thread. Sibling of the viewport (not an
       overlay) so it shrinks the scroll area rather than covering messages.
       Self-hides with no tasks. */}
       <ChatPlanAccordion className="mt-14 md:mt-12" />
-      {showArcaBanner && <ArcaShutdownBanner warning={arcaWarning} hasTasks={display.hasTasks} />}
+      {/* The first pinned row clears the header; chat-plan-accordion adds the
+      native shells' safe-area shift (index.css). */}
+      <OpenItemsPanel
+        className={display.hasTasks ? undefined : "chat-plan-accordion mt-14 md:mt-12"}
+      />
+      {showArcaBanner && (
+        <ArcaShutdownBanner warning={arcaWarning} hasTasks={display.hasTasks || hasOpenItems} />
+      )}
       {/* Wrapper div gives us a ref to scope the SelectionPopup to the
       conversation area without requiring Conversation to forward refs. */}
       <div
@@ -450,7 +465,7 @@ function TranscriptImpl({
           />
         )}
       </div>
-    </>
+    </ItemLabelIndexContext.Provider>
   );
 }
 

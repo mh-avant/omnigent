@@ -81,6 +81,15 @@ import { useForkDialog } from "@/shell/ForkDialogContext";
 import { DisabledActionTooltip } from "@/components/DisabledActionTooltip";
 import { InlineImage, SessionImage } from "@/components/SessionImage";
 import { buildMessageDeepLink } from "@/lib/messageDeepLink";
+import {
+  ItemLabelMessageContext,
+  buildItemLabelIndex,
+  itemLabelsIn,
+  struckItemLabelsIn,
+  type ItemLabelIndex,
+  type ItemLabelScan,
+  type ItemLabelSource,
+} from "@/lib/itemLabels";
 import { copyText } from "@/lib/clipboard";
 import { copyMarkdown } from "@/lib/copyMarkdown";
 import { showToast } from "@/components/ui/toast";
@@ -165,6 +174,42 @@ export function collectBubbleMarkdown(items: RenderItem[]): string {
     .map((item) => item.text)
     .join("\n\n")
     .trim();
+}
+
+// Finalized bubbles are reused by reference across rebuilds, so each is scanned once.
+const itemLabelScans = new WeakMap<Bubble, ItemLabelScan>();
+
+function scanBubbleItemLabels(bubble: Bubble): ItemLabelScan | null {
+  if (bubble.kind !== "user" && bubble.kind !== "assistant") return null;
+  const cached = itemLabelScans.get(bubble);
+  if (cached) return cached;
+  const source: ItemLabelSource =
+    bubble.kind === "user"
+      ? { messageId: bubble.itemId, role: "user", text: extractUserText(bubble.content) }
+      : {
+          messageId: bubble.responseId,
+          role: "assistant",
+          text: collectBubbleMarkdown(bubble.items),
+        };
+  if (bubble.createdAtS !== undefined) source.createdAtS = bubble.createdAtS;
+  const labels = itemLabelsIn(source.text);
+  const scan = {
+    source,
+    labels,
+    struck: labels.length > 0 ? struckItemLabelsIn(source.text) : [],
+  };
+  itemLabelScans.set(bubble, scan);
+  return scan;
+}
+
+/** Maps each item label in the transcript to the message that first carried it. */
+export function buildBubbleItemLabelIndex(bubbles: readonly Bubble[]): ItemLabelIndex {
+  return buildItemLabelIndex(
+    bubbles.flatMap((bubble) => {
+      const scan = scanBubbleItemLabels(bubble);
+      return scan && scan.labels.length > 0 ? [scan] : [];
+    }),
+  );
 }
 
 const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
@@ -567,7 +612,13 @@ export const BubbleView = memo(
     /** Hide retry/recovery controls when the surrounding session is sealed. */
     recoveryDisabled?: boolean;
   }) {
-    if (bubble.kind === "user") return <UserBubble bubble={bubble} />;
+    if (bubble.kind === "user") {
+      return (
+        <ItemLabelMessageContext.Provider value={bubble.itemId}>
+          <UserBubble bubble={bubble} />
+        </ItemLabelMessageContext.Provider>
+      );
+    }
     if (bubble.kind === "compaction_loading") {
       return <CompactionLoadingIndicator createdAtS={bubble.createdAtS} />;
     }
@@ -587,13 +638,15 @@ export const BubbleView = memo(
       );
     }
     return (
-      <AssistantBubble
-        bubble={bubble}
-        isLastAssistant={isLastAssistant}
-        showsWorking={showsWorking}
-        actionsPersistent={actionsPersistent}
-        recoveryDisabled={recoveryDisabled}
-      />
+      <ItemLabelMessageContext.Provider value={bubble.responseId}>
+        <AssistantBubble
+          bubble={bubble}
+          isLastAssistant={isLastAssistant}
+          showsWorking={showsWorking}
+          actionsPersistent={actionsPersistent}
+          recoveryDisabled={recoveryDisabled}
+        />
+      </ItemLabelMessageContext.Provider>
     );
   },
   (prev, next) =>

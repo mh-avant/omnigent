@@ -34,6 +34,7 @@ from omnigent.harnesses.codex_native.bridge import (
 )
 from omnigent.harnesses.codex_native.elicitation import codex_elicitation_id
 from omnigent.inner.native_attachments import attachment_cache_dir
+from omnigent.runtime.prompt import ITEM_LABEL_INSTRUCTION
 from omnigent.spec import load
 
 # The default-stance auto-review override normalize_codex_permission_launch_args
@@ -8870,6 +8871,7 @@ def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_fres
 
     assert captured.get("developer_instructions") is not None
     assert "Codex is running in the session terminal" in captured["developer_instructions"]
+    assert captured["developer_instructions"].endswith(f"\n\n{ITEM_LABEL_INSTRUCTION}")
 
 
 def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_resume(
@@ -8952,6 +8954,7 @@ def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_resu
 
     assert captured.get("developer_instructions") is not None
     assert "Codex is running in the session terminal" in captured["developer_instructions"]
+    assert captured["developer_instructions"].endswith(f"\n\n{ITEM_LABEL_INSTRUCTION}")
 
 
 @pytest.mark.asyncio

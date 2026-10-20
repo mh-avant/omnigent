@@ -95,6 +95,7 @@ from omnigent.runner.session_init_protocol import (
     RunnerSessionInitEnvelope,
 )
 from omnigent.runner.transports.ws_tunnel.event_delivery import RunnerEventDispatcher
+from omnigent.runtime.prompt import native_startup_instructions
 from omnigent.spec.types import AgentSpec
 
 _logger = logging.getLogger("omnigent.runner.app")
@@ -5484,7 +5485,9 @@ async def _auto_create_codex_terminal(
         "\n\n".join(
             x
             for x in [
-                _native_startup_raw_instructions_from_spec(agent_spec),
+                native_startup_instructions(
+                    _native_startup_raw_instructions_from_spec(agent_spec)
+                ),
                 _codex_routing_note,
             ]
             if x
@@ -9262,7 +9265,12 @@ async def _auto_create_claude_terminal(
         subagent_router_dir=subagent_router_dir,
         append_system_prompt="\n\n".join(
             x
-            for x in [_native_startup_raw_instructions_from_spec(agent_spec), routed_spawn_note]
+            for x in [
+                native_startup_instructions(
+                    _native_startup_raw_instructions_from_spec(agent_spec)
+                ),
+                routed_spawn_note,
+            ]
             if x
         )
         or None,

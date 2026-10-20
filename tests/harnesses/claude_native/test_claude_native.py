@@ -40,6 +40,7 @@ from omnigent.models.databricks_model_discovery import DatabricksClaudeCatalog
 from omnigent.native import native_terminal
 from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
 from omnigent.runtime import tool_result_replay as trc
+from omnigent.runtime.prompt import ITEM_LABEL_INSTRUCTION
 from omnigent.spec import load_omnigent_yaml
 from omnigent.terminals.ws_common import (
     WS_CLOSE_TERMINAL_DETACHED,
@@ -1688,6 +1689,7 @@ def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_fres
     assert (
         "Claude Code is running in the session terminal" in launch_kwargs["append_system_prompt"]
     )
+    assert launch_kwargs["append_system_prompt"].endswith(f"\n\n{ITEM_LABEL_INSTRUCTION}")
 
 
 def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_cold_resume(
@@ -1775,6 +1777,7 @@ def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_cold
     assert (
         "Claude Code is running in the session terminal" in launch_kwargs["append_system_prompt"]
     )
+    assert launch_kwargs["append_system_prompt"].endswith(f"\n\n{ITEM_LABEL_INSTRUCTION}")
 
 
 def test_local_resume_does_not_print_redundant_resume_hint(

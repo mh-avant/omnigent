@@ -108,6 +108,7 @@ from omnigent.native.native_terminal import request_with_429_retry
 from omnigent.native.native_terminal import (
     terminal_attach_url as _attach_url,
 )
+from omnigent.runtime.prompt import native_startup_instructions
 from omnigent.runtime.tool_result_replay import sanitize_replayed_image_blocks
 from omnigent.util.http_retry import jittered_retry_delay
 from omnigent.util.json_types import JsonObject as _JsonObject
@@ -743,7 +744,9 @@ def _run_with_local_server(
                     command=command,
                     model=model,
                     startup_progress=progress,
-                    developer_instructions=_wrapper_spec_raw_instructions(spec_path),
+                    developer_instructions=native_startup_instructions(
+                        _wrapper_spec_raw_instructions(spec_path)
+                    ),
                 )
             if resolved_session_id is None:
                 _record_launch_for_fresh_session(prepared.session_id)
@@ -1174,7 +1177,8 @@ async def _prepare_codex_terminal(
     :param model: Optional model id.
     :param startup_progress: Optional user-visible progress renderer,
         e.g. a handle from :func:`runner_startup_progress`.
-    :param developer_instructions: Raw author instructions persisted into
+    :param developer_instructions: Author instructions plus static framework
+        guidance (:func:`native_startup_instructions`) persisted into
         Codex's private per-session config, applied on fresh launch and
         cold resume only — the reattach branch below returns before this
         is used, so it never relaunches or duplicates the value.

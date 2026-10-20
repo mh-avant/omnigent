@@ -1,11 +1,12 @@
 // Markdown rendering for chat text: assistant bubbles, user bubbles, and any
 // other surface that shows agent-authored markdown.
 //
-// Two affordances beyond plain markdown, both routing to the FileViewer so a
-// file the agent names is one click away:
+// Three affordances beyond plain markdown. The first two route to the
+// FileViewer so a file the agent names is one click away:
 //
 //   1. Inline-code paths (`` `src/App.tsx` ``): see `WorkspacePathInlineCode`.
 //   2. Markdown links whose href is a file path: see `WorkspaceFileLink`.
+//   3. Item labels (`[Q3]`) that preview where they were raised: see `ItemLabelChip`.
 //
 // Lives apart from `BlockRenderer` so approval cards can render agent markdown
 // without importing the block dispatcher that renders them.
@@ -28,10 +29,25 @@ import {
 import { ZoomableImage } from "@/components/ImageLightbox";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { isRemoteVideoUrl, isVideoFile } from "@/lib/video";
+import { useHoverPopover } from "@/hooks/useHoverPopover";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
 import { withBasePath } from "@/lib/basePath";
 import { followLinkWithPopupFallback } from "@/lib/openLinkInApp";
 import { extractInlineRunnableCommand } from "@/lib/runnableCommands";
+import {
+  ITEM_LABEL_HREF_PREFIX,
+  ItemLabelIndexContext,
+  ItemLabelMessageContext,
+  extractItemBlock,
+  extractLabelSentence,
+  remarkItemLabels,
+  type ItemLabelEntry,
+  type ItemLabelSource,
+} from "@/lib/itemLabels";
+import { MESSAGE_QUERY_PARAM } from "@/lib/messageDeepLink";
+import { relativeTime } from "@/lib/relativeTime";
+import { useSearchParams } from "@/lib/routing";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import {
   useFileViewer,
@@ -419,6 +435,163 @@ function WorkspaceFileLink({
   );
 }
 
+const ITEM_LABEL_BADGE_CLASS =
+  "inline-flex items-baseline rounded border border-border bg-muted px-1 font-mono text-[0.85em] leading-snug";
+const ITEM_LABEL_CLOSED_CLASS = "line-through opacity-60";
+
+/** Classes for an item label chip: a clickable badge, struck through once closed. */
+export function itemLabelChipClass(closed: boolean): string {
+  return cn(
+    ITEM_LABEL_BADGE_CLASS,
+    "cursor-pointer text-link transition-colors hover:bg-accent",
+    closed && ITEM_LABEL_CLOSED_CLASS,
+  );
+}
+
+function describeSource(source: ItemLabelSource): string {
+  const age = source.createdAtS === undefined ? "" : relativeTime(source.createdAtS * 1000);
+  const when = age === "now" ? "just now" : age && `${age} ago`;
+  return `${source.role === "user" ? "User" : "Agent"}${when ? ` · ${when}` : ""}`;
+}
+
+/** The block that defined an item, plus how it was closed, as the messages show them. */
+function ItemLabelPreview({ item, onClose }: { item: ItemLabelEntry; onClose: () => void }) {
+  const { label, source, closedBy } = item;
+  // Only mounted inside a transcript, which always sits under a router.
+  const [, setSearchParams] = useSearchParams();
+  const block = useMemo(() => extractItemBlock(source.text, label), [source.text, label]);
+  const closing = useMemo(
+    () => (closedBy ? extractLabelSentence(closedBy.text, label) : null),
+    [closedBy, label],
+  );
+  const showMessage = (messageId: string) => {
+    onClose();
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set(MESSAGE_QUERY_PARAM, messageId);
+      return next;
+    });
+  };
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span>
+          <span className="font-mono font-medium text-foreground">{label}</span>
+          {` · ${describeSource(source)}`}
+        </span>
+        <button
+          type="button"
+          className="shrink-0 text-link hover:underline"
+          onClick={() => showMessage(source.messageId)}
+        >
+          Show in conversation
+        </button>
+      </div>
+      {/* Labels inside the preview resolve relative to the defining message. */}
+      <ItemLabelMessageContext.Provider value={source.messageId}>
+        <FilePathAwareMessageResponse>{block ?? source.text}</FilePathAwareMessageResponse>
+      </ItemLabelMessageContext.Provider>
+      {closedBy && (
+        <div className="flex flex-col gap-1 border-t border-border pt-2">
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span>{`Closed · ${describeSource(closedBy)}`}</span>
+            <button
+              type="button"
+              className="shrink-0 text-link hover:underline"
+              onClick={() => showMessage(closedBy.messageId)}
+            >
+              Show
+            </button>
+          </div>
+          {closing && (
+            <ItemLabelMessageContext.Provider value={closedBy.messageId}>
+              <FilePathAwareMessageResponse>{closing}</FilePathAwareMessageResponse>
+            </ItemLabelMessageContext.Provider>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * A popover previewing `item`, opened by clicking the `children` trigger; with
+ * `openOnHover`, a desktop mouse hover previews it too.
+ */
+export function ItemLabelPopover({
+  item,
+  openOnHover = false,
+  children,
+}: {
+  item: ItemLabelEntry;
+  openOnHover?: boolean;
+  children: React.ReactElement;
+}) {
+  const { open, onOpenChange, triggerProps, contentProps } = useHoverPopover(openOnHover);
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild {...triggerProps}>
+        {children}
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="max-h-[min(28rem,60vh)] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto"
+        {...contentProps}
+      >
+        <ItemLabelPreview item={item} onClose={() => onOpenChange(false)} />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * Renders an item label. In the message that defines it the label is a static
+ * badge; anywhere later it is a chip whose popover previews the defining block
+ * with a link to the message. Both are struck through once the item is closed.
+ * Until the transcript uses labels, or for a label with no loaded definition or
+ * outside a transcript, it stays as the text that was written.
+ */
+function ItemLabelChip({ label, children }: { label: string; children: React.ReactNode }) {
+  const index = useContext(ItemLabelIndexContext);
+  const messageId = useContext(ItemLabelMessageContext);
+  const item = index?.enabled ? index.items.get(label) : undefined;
+
+  if (!item) return children;
+  const closed = item.closedBy !== null;
+  if (item.source.messageId === messageId) {
+    return (
+      <span
+        className={cn(ITEM_LABEL_BADGE_CLASS, "font-medium", closed && ITEM_LABEL_CLOSED_CLASS)}
+      >
+        {label}
+      </span>
+    );
+  }
+  return (
+    <ItemLabelPopover item={item} openOnHover>
+      <button
+        type="button"
+        aria-label={`Show item ${label}${closed ? " (closed)" : ""}`}
+        className={itemLabelChipClass(closed)}
+      >
+        {label}
+      </button>
+    </ItemLabelPopover>
+  );
+}
+
+/** Routes item-label links to {@link ItemLabelChip} and every other link to {@link WorkspaceFileLink}. */
+function ChatMarkdownLink(props: WithHastNode<React.ComponentPropsWithoutRef<"a">>) {
+  if (props.href?.startsWith(ITEM_LABEL_HREF_PREFIX)) {
+    return (
+      <ItemLabelChip label={props.href.slice(ITEM_LABEL_HREF_PREFIX.length)}>
+        {props.children}
+      </ItemLabelChip>
+    );
+  }
+  return <WorkspaceFileLink {...props} />;
+}
+
 // Markdown images open in the shared lightbox on click, matching uploaded and
 // generated images. (Remote `src`s are still gated by Streamdown's image
 // security; this only adds the zoom affordance to whatever does render.)
@@ -437,8 +610,13 @@ function ZoomableMarkdownImage({
 const FILE_PATH_AWARE_COMPONENTS = {
   inlineCode: WorkspacePathInlineCode,
   img: ZoomableMarkdownImage,
-  a: WorkspaceFileLink,
+  a: ChatMarkdownLink,
 };
+
+// Streamdown's `remarkPlugins` prop replaces its defaults rather than merging,
+// so both lists extend them (keeping remark-gfm). Module-level for stable identity.
+const CHAT_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkItemLabels];
+const CHAT_REMARK_PLUGINS_WITH_BREAKS = [...CHAT_REMARK_PLUGINS, remarkBreaks];
 
 // How often the live (growing) assistant bubble re-parses its markdown. The
 // store pump commits a new, longer text up to once per animation frame (~60/s);
@@ -522,13 +700,12 @@ function PlainTextFallback({ text }: { text: string }) {
  * `<pre>` wrapper and Shiki highlighting. Overriding `code` here would replace
  * block rendering too, stripping `<pre>` and collapsing whitespace.
  *
+ * Item labels (`[Q3]`) become {@link ItemLabelChip}s via `remarkItemLabels`.
+ *
  * When `breaks` is set, single newlines render as `<br>` (remark-breaks)
  * instead of collapsing to spaces per CommonMark. Used for user bubbles,
  * where people type multi-line messages without blank-line paragraph
- * separators and expect their line breaks preserved. NOTE: Streamdown's
- * `remarkPlugins` prop *replaces* its defaults rather than merging, so we
- * extend `defaultRemarkPlugins` (which carries remark-gfm) — passing
- * `[remarkBreaks]` alone would silently drop GFM tables / strikethrough.
+ * separators and expect their line breaks preserved.
  */
 export function FilePathAwareMessageResponse({
   children,
@@ -537,13 +714,7 @@ export function FilePathAwareMessageResponse({
 }: React.ComponentProps<typeof MessageResponse> & { breaks?: boolean }) {
   const components = FILE_PATH_AWARE_COMPONENTS;
 
-  // Extend (don't replace) Streamdown's defaults so remark-gfm survives;
-  // append remark-breaks only when `breaks` is requested. When `breaks` is
-  // false we pass `undefined` so Streamdown uses its own defaults unchanged.
-  const remarkPlugins = useMemo(
-    () => (breaks ? [...Object.values(defaultRemarkPlugins), remarkBreaks] : undefined),
-    [breaks],
-  );
+  const remarkPlugins = breaks ? CHAT_REMARK_PLUGINS_WITH_BREAKS : CHAT_REMARK_PLUGINS;
 
   // Throttle the markdown so the live (still-growing) bubble re-parses a few
   // times per second instead of on every store commit. `children` is a string
