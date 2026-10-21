@@ -381,12 +381,60 @@ describe("CommandPalette — new chat in project", () => {
     expect(navigate).toHaveBeenCalledWith("/?project=home%20lab");
   });
 
+  it("routes the New chat action through onNewSession", () => {
+    const onNewSession = vi.fn();
+    const { onOpenChange } = renderPalette({ onNewSession });
+    fireEvent.click(screen.getByText("New chat"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onNewSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("omits project rows in the sessions-only switcher", () => {
     renderPalette({ sessionsOnly: true });
     fireEvent.change(screen.getByTestId("command-palette-input"), {
       target: { value: "omni" },
     });
     expect(screen.queryByText("New chat in omnigent")).toBeNull();
+  });
+});
+
+describe("CommandPalette — project step", () => {
+  beforeEach(() => {
+    setSessions([conv("s1", "Cached session")]);
+    useProjects.mockReturnValue({
+      data: [
+        { id: "p1", name: "omnigent", icon: "🔥" },
+        { id: null, name: "home lab", icon: null },
+      ],
+    });
+  });
+
+  it("offers No project first, then every project, and nothing else", () => {
+    renderPalette({ projectStep: true });
+
+    expect(screen.getByPlaceholderText("Start a new session in…")).toBeTruthy();
+    const rows = screen.getAllByRole("option").map((row) => row.textContent);
+    expect(rows).toEqual(["No project", "🔥omnigent", "home lab"]);
+    expect(useConversations).toHaveBeenCalledWith("", false, { enabled: false });
+  });
+
+  it("filters projects by name as the user types", () => {
+    renderPalette({ projectStep: true });
+    fireEvent.change(screen.getByTestId("command-palette-input"), {
+      target: { value: "lab" },
+    });
+    expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual(["home lab"]);
+  });
+
+  it.each([
+    ["No project", "/"],
+    ["home lab", "/?project=home%20lab"],
+  ])("opens the composer for %s", (row, path) => {
+    const { onOpenChange } = renderPalette({ projectStep: true });
+    fireEvent.click(screen.getByText(row));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(navigate).toHaveBeenCalledWith(path);
   });
 });
 

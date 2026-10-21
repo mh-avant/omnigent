@@ -69,6 +69,10 @@ and steers messages while the agent is busy.
 - `new-session-hotkey`: ⌘+Shift+O on macOS or Ctrl+Shift+O on Windows/Linux
   opens and focuses the new-session composer in browsers. Native shells retain
   ⌘/Ctrl+Alt+N. Embedded apps require focus inside the app.
+- `new-session-project-prompt`: when projects exist, the hotkey, the sidebar's
+  New session links, and the palette's New chat first ask for a project (or No
+  project), then open the composer with its defaults. Settings › General ›
+  Sessions turns it off. Modified clicks on the links still open a new tab.
 - `queue-and-steer`: messages sent while the agent is busy wait in a queue and
   can be steered into the running turn.
 - `browser-pointer-queue`: desktop Design-mode instructions follow the same queue
@@ -149,6 +153,12 @@ and steers messages while the agent is busy.
 - With the browser app focused, press ⌘+Shift+O (macOS) or
   Ctrl+Shift+O (Windows/Linux) to open and focus a clean new-session
   composer.
+- With at least one project, press the hotkey or click New session (also from
+  the mobile drawer): a "Start a new session in…" picker opens. Type part of a
+  project name and press Enter to land on `/?project=<name>` with its defaults;
+  choose No project for a plain composer. Turn off **Ask for a project when
+  starting a session** in Settings and the same actions open the composer
+  directly.
 - Hover the model/effort pill to see the tooltip.
 - Hover the host chip to see the selected host or sandbox and its connection.
 - Pick a harness, then open its configuration for model, effort (Codex, Claude,

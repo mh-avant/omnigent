@@ -265,7 +265,8 @@ vi.mock("./TerminalsPanel", () => ({
   ),
 }));
 
-import { useConversations } from "@/hooks/useConversations";
+import { useConversations, useProjects } from "@/hooks/useConversations";
+import { writeNewChatProjectPromptEnabled } from "@/lib/newChatProjectPromptPreferences";
 import { useTerminals, useDeleteTerminal } from "@/hooks/useTerminals";
 
 const useConvMock = vi.mocked(useConversations);
@@ -5646,5 +5647,52 @@ describe("new-session browser shortcut", () => {
     fireEvent.keyDown(composer, { key: "O", code: "KeyO", ctrlKey: true, shiftKey: true });
     expect(screen.getByText("New session route")).toBeInTheDocument();
     setEmbedRoot(null);
+  });
+
+  describe("with projects", () => {
+    beforeEach(() => {
+      vi.mocked(useProjects).mockReturnValue({
+        data: [{ id: "p1", name: "omnigent" }],
+      } as unknown as ReturnType<typeof useProjects>);
+    });
+    afterEach(() => {
+      vi.mocked(useProjects).mockReturnValue({ data: [] } as unknown as ReturnType<
+        typeof useProjects
+      >);
+      localStorage.clear();
+    });
+
+    function pressNewSession() {
+      mockConversations([{ id: "conv_abc", permission_level: null }]);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        shellTree(
+          client,
+          "/c/conv_abc",
+          <>
+            <Route index element={<p>New session route</p>} />
+            <Route path="c/:conversationId" element={<p>Session route</p>} />
+          </>,
+          <AppShell />,
+        ),
+      );
+      fireEvent.keyDown(document, { key: "O", code: "KeyO", ctrlKey: true, shiftKey: true });
+    }
+
+    it("asks for a project before opening the composer", () => {
+      pressNewSession();
+      expect(screen.getByPlaceholderText("Start a new session in…")).toBeInTheDocument();
+      expect(screen.queryByText("New session route")).toBeNull();
+
+      fireEvent.click(screen.getByText("No project"));
+      expect(screen.getByText("New session route")).toBeInTheDocument();
+    });
+
+    it("opens the composer directly when the prompt is turned off", () => {
+      writeNewChatProjectPromptEnabled(false);
+      pressNewSession();
+      expect(screen.queryByPlaceholderText("Start a new session in…")).toBeNull();
+      expect(screen.getByText("New session route")).toBeInTheDocument();
+    });
   });
 });
