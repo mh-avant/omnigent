@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { buildItemCommentMessage } from "@/lib/itemComments";
 import type { QueuedMessage } from "@/store/chatStore";
 import {
   QueuedMessagesStrip,
@@ -25,6 +26,27 @@ afterEach(() => {
 });
 
 describe("QueuedMessagesStrip", () => {
+  it("shows a queued comment message as one summary row", () => {
+    const text = buildItemCommentMessage([
+      {
+        label: "Q2",
+        title: "Cutoff",
+        comments: [
+          { text: "Use the zone.", attachments: [] },
+          { text: "Store it.", attachments: [] },
+        ],
+      },
+      { label: "R1", title: "Backfill", comments: [{ text: "Batch it.", attachments: [] }] },
+    ]);
+    render(
+      <QueuedMessagesStrip messages={[msg("q_1", text)]} onDelete={vi.fn()} onEdit={vi.fn()} />,
+    );
+
+    const summary = screen.getByTestId("queued-item-comments");
+    expect(summary.textContent).toBe("3 comments onQ2R1");
+    expect(screen.queryByText(/Use the zone/)).toBeNull();
+  });
+
   it.each([
     ["attachment only, named", "", "Screenshot 2026-09-18 at 11.49.24 AM.png"],
     ["attachment only, unnamed", "", ""],

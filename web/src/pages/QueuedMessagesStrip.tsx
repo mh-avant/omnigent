@@ -23,11 +23,15 @@ import {
   XIcon,
 } from "lucide-react";
 
+import { useMemo } from "react";
+
+import { itemLabelChipClass } from "@/components/blocks/ChatMarkdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { QueuedMessage } from "@/store/chatStore";
 import { attachmentFilename } from "@/lib/attachments";
+import { summarizeItemCommentMessage } from "@/lib/itemComments";
 import { cn } from "@/lib/utils";
 
 /** Keep touch targets large without enlarging the visible glyphs. */
@@ -121,6 +125,8 @@ function QueuedRow({
     setDropRef(node);
   };
   const hasText = message.text.trim().length > 0;
+  // A comment message reads as one row: "3 comments on Q2 R1".
+  const commentSummary = useMemo(() => summarizeItemCommentMessage(message.text), [message.text]);
   const files = message.files ?? [];
   const attachmentNames = files.map(attachmentFilename);
   const AttachmentIcon = files.every((file) => file.type.startsWith("image/"))
@@ -162,10 +168,27 @@ function QueuedRow({
         />
       )}
       <div className="flex min-w-0 flex-1 items-center gap-2 max-md:flex-col max-md:items-start max-md:gap-0.5">
-        {hasText && (
-          <span className="min-w-0 max-w-full truncate" title={message.text}>
-            {message.text}
+        {commentSummary ? (
+          <span
+            data-testid="queued-item-comments"
+            className="flex min-w-0 max-w-full items-baseline gap-1 overflow-hidden"
+            title={message.text}
+          >
+            <span className="shrink-0">
+              {commentSummary.commentCount} comment{commentSummary.commentCount === 1 ? "" : "s"} on
+            </span>
+            {commentSummary.labels.map((label) => (
+              <span key={label} className={cn(itemLabelChipClass(false), "pointer-events-none")}>
+                {label}
+              </span>
+            ))}
           </span>
+        ) : (
+          hasText && (
+            <span className="min-w-0 max-w-full truncate" title={message.text}>
+              {message.text}
+            </span>
+          )
         )}
         {attachmentNames.length > 0 && (
           <Badge

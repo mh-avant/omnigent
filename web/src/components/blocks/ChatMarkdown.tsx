@@ -6,14 +6,15 @@
 //
 //   1. Inline-code paths (`` `src/App.tsx` ``): see `WorkspacePathInlineCode`.
 //   2. Markdown links whose href is a file path: see `WorkspaceFileLink`.
-//   3. Item labels (`[Q3]`) that preview where they were raised: see `ItemLabelChip`.
+//   3. Item labels (`[Q3]`) that preview where they were raised and take
+//      comments: see `ItemLabelChip`.
 //
 // Lives apart from `BlockRenderer` so approval cards can render agent markdown
 // without importing the block dispatcher that renders them.
 
 import type React from "react";
 import { useContext, useMemo } from "react";
-import { GitPullRequestIcon } from "lucide-react";
+import { GitPullRequestIcon, MessageSquarePlusIcon, PaperclipIcon } from "lucide-react";
 import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
 import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMarkdown";
@@ -38,16 +39,30 @@ import {
   ITEM_LABEL_HREF_PREFIX,
   ItemLabelIndexContext,
   ItemLabelMessageContext,
+  ItemLabelSessionContext,
   extractItemBlock,
   extractLabelSentence,
   remarkItemLabels,
   type ItemLabelEntry,
+  type ItemLabelFile,
   type ItemLabelSource,
 } from "@/lib/itemLabels";
+import { itemCommentTitle } from "@/lib/itemComments";
+import {
+  requestItemComment,
+  useCanCommentOnItems,
+  useItemCommentDraftCounts,
+  useItemCommentState,
+} from "@/lib/itemCommentDrafts";
+import { deleteItemCommentDraftWithUndo } from "@/components/chat/itemCommentActions";
+import { getCurrentAuthorId } from "@/lib/identity";
+import { SessionImage } from "@/components/SessionImage";
+import { Button } from "@/components/ui/button";
 import { MESSAGE_QUERY_PARAM } from "@/lib/messageDeepLink";
 import { relativeTime } from "@/lib/relativeTime";
 import { useSearchParams } from "@/lib/routing";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { keyedAttachments } from "@/lib/blocks";
 import { cn } from "@/lib/utils";
 import {
   useFileViewer,
@@ -448,18 +463,121 @@ export function itemLabelChipClass(closed: boolean): string {
   );
 }
 
-function describeSource(source: ItemLabelSource): string {
+/** A chip's accessible name, e.g. "Show item Q2 (closed), 2 comments, 1 draft". */
+export function itemLabelChipName(
+  label: string,
+  closed: boolean,
+  commentCount: number,
+  draftCount: number,
+): string {
+  const parts = [`Show item ${label}${closed ? " (closed)" : ""}`];
+  if (commentCount > 0) parts.push(`${commentCount} comment${commentCount === 1 ? "" : "s"}`);
+  if (draftCount > 0) parts.push(`${draftCount} draft${draftCount === 1 ? "" : "s"}`);
+  return parts.join(", ");
+}
+
+/** A chip's marks: an amber dot while drafts are unsent, then the sent-comment count. */
+export function ItemLabelChipMarks({
+  commentCount,
+  draftCount,
+}: {
+  commentCount: number;
+  draftCount: number;
+}) {
+  return (
+    <>
+      {draftCount > 0 && (
+        <span
+          aria-hidden="true"
+          data-testid="item-label-draft-mark"
+          className="ml-0.5 size-1.5 shrink-0 self-center rounded-full bg-warning"
+        />
+      )}
+      {commentCount > 0 && (
+        <span
+          aria-hidden="true"
+          className="ml-1 border-l border-border pl-1 text-[0.9em] text-muted-foreground tabular-nums"
+        >
+          {commentCount}
+        </span>
+      )}
+    </>
+  );
+}
+
+function describeAge(source: ItemLabelSource): string {
   const age = source.createdAtS === undefined ? "" : relativeTime(source.createdAtS * 1000);
-  const when = age === "now" ? "just now" : age && `${age} ago`;
+  return age === "now" ? "just now" : age && `${age} ago`;
+}
+
+function describeSource(source: ItemLabelSource): string {
+  const when = describeAge(source);
   return `${source.role === "user" ? "User" : "Agent"}${when ? ` · ${when}` : ""}`;
 }
 
-/** The block that defined an item, plus how it was closed, as the messages show them. */
+function describeCommentAuthor(source: ItemLabelSource): string {
+  const author = source.author && source.author !== getCurrentAuthorId() ? source.author : "You";
+  const when = describeAge(source);
+  return when ? `${author} · ${when}` : author;
+}
+
+/** Files sent with a comment: thumbnails where the transcript kept the image, else names. */
+function ItemCommentAttachments({ files }: { files: readonly ItemLabelFile[] }) {
+  const sessionId = useContext(ItemLabelSessionContext);
+  if (files.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-start gap-1.5">
+      {keyedAttachments([...files], (file) => file.fileId ?? file.filename).map(
+        ({ key, item: file }) =>
+          file.image && file.fileId && sessionId ? (
+            <SessionImage
+              key={key}
+              path={`/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(file.fileId)}/content`}
+              alt={file.filename}
+              className="max-h-20 rounded-md object-contain"
+            />
+          ) : (
+            <span
+              key={key}
+              className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+            >
+              <PaperclipIcon className="size-3 shrink-0" aria-hidden="true" />
+              <span className="truncate">{file.filename}</span>
+            </span>
+          ),
+      )}
+    </div>
+  );
+}
+
+const POPOVER_SECTION_CLASS = "flex flex-col gap-2 border-t border-border pt-2";
+const POPOVER_META_CLASS = "flex items-center justify-between gap-3 text-xs text-muted-foreground";
+const POPOVER_ACTION_CLASS = "shrink-0 text-link hover:underline";
+
+/** The block that defines an item, rendered as in its message (or the whole message). */
+export function ItemLabelDefinition({ item }: { item: ItemLabelEntry }) {
+  const { label, source } = item;
+  const block = useMemo(() => extractItemBlock(source.text, label), [source.text, label]);
+  // Labels inside resolve relative to the defining message.
+  return (
+    <ItemLabelMessageContext.Provider value={source.messageId}>
+      <FilePathAwareMessageResponse>{block ?? source.text}</FilePathAwareMessageResponse>
+    </ItemLabelMessageContext.Provider>
+  );
+}
+
+/**
+ * The block that defined an item, the comments sent on it (with the agent's
+ * reply to each), this browser's unsent drafts, and how it was closed.
+ */
 function ItemLabelPreview({ item, onClose }: { item: ItemLabelEntry; onClose: () => void }) {
-  const { label, source, closedBy } = item;
+  const { label, source, closedBy, comments } = item;
   // Only mounted inside a transcript, which always sits under a router.
   const [, setSearchParams] = useSearchParams();
-  const block = useMemo(() => extractItemBlock(source.text, label), [source.text, label]);
+  const sessionId = useContext(ItemLabelSessionContext);
+  const canComment = useCanCommentOnItems(sessionId);
+  const { drafts } = useItemCommentState(sessionId);
+  const itemDrafts = drafts.filter((draft) => draft.label === label);
   const closing = useMemo(
     () => (closedBy ? extractLabelSentence(closedBy.text, label) : null),
     [closedBy, label],
@@ -472,32 +590,129 @@ function ItemLabelPreview({ item, onClose }: { item: ItemLabelEntry; onClose: ()
       return next;
     });
   };
+  const startComment = (draftId?: string) => {
+    if (sessionId === null || !canComment) return;
+    onClose();
+    requestItemComment(sessionId, {
+      label,
+      title: itemCommentTitle(source.text, label),
+      ...(draftId ? { draftId } : {}),
+    });
+  };
   return (
-    <>
-      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+    <div
+      className="flex flex-col gap-2"
+      onKeyDown={(event) => {
+        // "C" starts a comment, unless a field inside the popover has focus.
+        if (event.key !== "c" || event.metaKey || event.ctrlKey || event.altKey) return;
+        if ((event.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
+        event.preventDefault();
+        startComment();
+      }}
+    >
+      <div className={POPOVER_META_CLASS}>
         <span>
           <span className="font-mono font-medium text-foreground">{label}</span>
           {` · ${describeSource(source)}`}
         </span>
         <button
           type="button"
-          className="shrink-0 text-link hover:underline"
+          className={POPOVER_ACTION_CLASS}
           onClick={() => showMessage(source.messageId)}
         >
           Show in conversation
         </button>
       </div>
-      {/* Labels inside the preview resolve relative to the defining message. */}
-      <ItemLabelMessageContext.Provider value={source.messageId}>
-        <FilePathAwareMessageResponse>{block ?? source.text}</FilePathAwareMessageResponse>
-      </ItemLabelMessageContext.Provider>
+      <ItemLabelDefinition item={item} />
+      {comments.length > 0 && (
+        <section aria-label="Comments" className={POPOVER_SECTION_CLASS}>
+          <div className="text-xs font-medium text-muted-foreground">
+            Comments ({comments.length})
+          </div>
+          {keyedAttachments(comments, (comment) => comment.source.messageId).map(
+            ({ key, item: comment }) => (
+              <div key={key} data-testid="item-comment" className="flex flex-col gap-1.5">
+                <div className={POPOVER_META_CLASS}>
+                  <span>{describeCommentAuthor(comment.source)}</span>
+                  <button
+                    type="button"
+                    className={POPOVER_ACTION_CLASS}
+                    onClick={() => showMessage(comment.source.messageId)}
+                  >
+                    Show
+                  </button>
+                </div>
+                <ItemLabelMessageContext.Provider value={comment.source.messageId}>
+                  <FilePathAwareMessageResponse>{comment.text}</FilePathAwareMessageResponse>
+                </ItemLabelMessageContext.Provider>
+                <ItemCommentAttachments files={comment.attachments} />
+                {comment.reply && (
+                  <div className="flex flex-col gap-0.5 border-l-2 border-border pl-2">
+                    <div className="text-xs text-muted-foreground">
+                      Agent replied
+                      {describeAge(comment.reply.source) &&
+                        ` · ${describeAge(comment.reply.source)}`}
+                    </div>
+                    <ItemLabelMessageContext.Provider value={comment.reply.source.messageId}>
+                      <FilePathAwareMessageResponse>
+                        {comment.reply.sentence}
+                      </FilePathAwareMessageResponse>
+                    </ItemLabelMessageContext.Provider>
+                  </div>
+                )}
+              </div>
+            ),
+          )}
+        </section>
+      )}
+      {itemDrafts.map((draft) => (
+        <section
+          key={draft.id}
+          aria-label="Comment draft"
+          data-testid="item-comment-draft"
+          className={cn(POPOVER_SECTION_CLASS, "gap-1")}
+        >
+          <div className={POPOVER_META_CLASS}>
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
+              {draft.submissionId ? "Draft · sending" : "Draft · not sent"}
+            </span>
+            {!draft.submissionId && sessionId !== null && (
+              <span className="flex shrink-0 items-center gap-3">
+                {canComment && (
+                  <button
+                    type="button"
+                    className={POPOVER_ACTION_CLASS}
+                    onClick={() => startComment(draft.id)}
+                  >
+                    Edit
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={POPOVER_ACTION_CLASS}
+                  onClick={() => deleteItemCommentDraftWithUndo(sessionId, draft.id)}
+                >
+                  Delete
+                </button>
+              </span>
+            )}
+          </div>
+          <p className="line-clamp-3 text-sm whitespace-pre-wrap">{draft.text}</p>
+          {draft.files.length > 0 && (
+            <ItemCommentAttachments
+              files={draft.files.map((file) => ({ filename: file.name, image: false }))}
+            />
+          )}
+        </section>
+      ))}
       {closedBy && (
-        <div className="flex flex-col gap-1 border-t border-border pt-2">
-          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <div className={cn(POPOVER_SECTION_CLASS, "gap-1")}>
+          <div className={POPOVER_META_CLASS}>
             <span>{`Closed · ${describeSource(closedBy)}`}</span>
             <button
               type="button"
-              className="shrink-0 text-link hover:underline"
+              className={POPOVER_ACTION_CLASS}
               onClick={() => showMessage(closedBy.messageId)}
             >
               Show
@@ -510,7 +725,21 @@ function ItemLabelPreview({ item, onClose }: { item: ItemLabelEntry; onClose: ()
           )}
         </div>
       )}
-    </>
+      {canComment && (
+        <div className="flex justify-end border-t border-border pt-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-keyshortcuts="C"
+            onClick={() => startComment()}
+          >
+            <MessageSquarePlusIcon className="size-4" aria-hidden="true" />
+            Comment
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -545,36 +774,42 @@ export function ItemLabelPopover({
 }
 
 /**
- * Renders an item label. In the message that defines it the label is a static
- * badge; anywhere later it is a chip whose popover previews the defining block
- * with a link to the message. Both are struck through once the item is closed.
- * Until the transcript uses labels, or for a label with no loaded definition or
- * outside a transcript, it stays as the text that was written.
+ * Renders an item label as a chip whose popover previews the defining block,
+ * the item's comments and a Comment button. In the message that defines it,
+ * the chip keeps the plain badge look. Chips are struck through once the item
+ * is closed, show an amber dot while it has unsent drafts and a count of sent
+ * comments. Until the transcript uses labels, or for a label with no loaded
+ * definition or outside a transcript, it stays as the text that was written.
  */
 function ItemLabelChip({ label, children }: { label: string; children: React.ReactNode }) {
   const index = useContext(ItemLabelIndexContext);
   const messageId = useContext(ItemLabelMessageContext);
+  const sessionId = useContext(ItemLabelSessionContext);
+  const draftCounts = useItemCommentDraftCounts(sessionId);
   const item = index?.enabled ? index.items.get(label) : undefined;
 
   if (!item) return children;
   const closed = item.closedBy !== null;
-  if (item.source.messageId === messageId) {
-    return (
-      <span
-        className={cn(ITEM_LABEL_BADGE_CLASS, "font-medium", closed && ITEM_LABEL_CLOSED_CLASS)}
-      >
-        {label}
-      </span>
-    );
-  }
+  const draftCount = draftCounts.get(label) ?? 0;
+  const commentCount = item.comments.length;
+  const defining = item.source.messageId === messageId;
   return (
     <ItemLabelPopover item={item} openOnHover>
       <button
         type="button"
-        aria-label={`Show item ${label}${closed ? " (closed)" : ""}`}
-        className={itemLabelChipClass(closed)}
+        aria-label={itemLabelChipName(label, closed, commentCount, draftCount)}
+        className={
+          defining
+            ? cn(
+                ITEM_LABEL_BADGE_CLASS,
+                "cursor-pointer font-medium transition-colors hover:bg-accent",
+                closed && ITEM_LABEL_CLOSED_CLASS,
+              )
+            : itemLabelChipClass(closed)
+        }
       >
         {label}
+        <ItemLabelChipMarks commentCount={commentCount} draftCount={draftCount} />
       </button>
     </ItemLabelPopover>
   );

@@ -30,6 +30,14 @@ import {
 import { setOmnigentHostConfig } from "@/lib/host";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
 import { FALLBACK_SERVER_INFO } from "@/lib/capabilities";
+import {
+  getItemCommentState,
+  publishItemLabelIndex,
+  requestItemComment,
+  resetItemCommentDraftsForTests,
+} from "@/lib/itemCommentDrafts";
+import { scanItemLabelSource } from "@/lib/itemComments";
+import { buildItemLabelIndex } from "@/lib/itemLabels";
 import * as host from "@/lib/host";
 import * as identity from "@/lib/identity";
 import {
@@ -405,6 +413,147 @@ describe("Composer session drafts", () => {
     // ...and switching back re-arms the saved attachment as a chip.
     act(() => useChatStore.setState({ conversationId: "conv_draft" }));
     await waitFor(() => expect(screen.getByText("notes.txt")).toBeTruthy());
+  });
+});
+
+describe("Composer item comments", () => {
+  beforeEach(() => {
+    clearSessionDrafts();
+    useChatStore.setState({ conversationId: "conv_comments", queuedMessages: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    clearSessionDrafts();
+    resetItemCommentDraftsForTests();
+    localStorage.clear();
+  });
+
+  function startComment(label: string, title: string) {
+    act(() => requestItemComment("conv_comments", { label, title }));
+  }
+
+  it("sets the typed message aside while commenting and saves the comment on Enter", async () => {
+    render(<Composer {...composerProps()} />);
+    fireEvent.change(textarea(), { target: { value: "Half-typed message" } });
+
+    startComment("Q2", "Report cutoff timezone");
+    const header = await screen.findByTestId("item-comment-mode");
+    expect(header.textContent).toContain("Q2");
+    expect(header.textContent).toContain("Report cutoff timezone");
+    expect(textarea()).toHaveValue("");
+    expect(textarea()).toHaveAttribute("placeholder", "Comment on Q2…");
+    // The set-aside message, not the comment, stays the session's draft.
+    fireEvent.change(textarea(), { target: { value: "Use the account's zone." } });
+    await waitFor(() => expect(getSessionDraft("conv_comments")?.text).toBe("Half-typed message"));
+
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+
+    expect(screen.queryByTestId("item-comment-mode")).toBeNull();
+    expect(textarea()).toHaveValue("Half-typed message");
+    // Saving leaves the tray collapsed, with the send button in its bar.
+    const tray = screen.getByTestId("item-comment-tray");
+    expect(tray.textContent).toContain("1 comment · Q2");
+    expect(screen.queryByTestId("item-comment-draft-row")).toBeNull();
+    expect(within(tray).getByTestId("submit-item-comments")).toHaveAccessibleName(
+      "Send 1 comment + message",
+    );
+    fireEvent.click(within(tray).getByRole("button", { name: "Show comment drafts" }));
+    expect(screen.getByTestId("item-comment-draft-row").textContent).toContain(
+      "Use the account's zone.",
+    );
+  });
+
+  it("shows the item's definition while commenting and a labelled Save button", async () => {
+    publishItemLabelIndex(
+      "conv_comments",
+      buildItemLabelIndex([
+        scanItemLabelSource({
+          messageId: "a1",
+          role: "assistant",
+          text: "1. **[Q2] Report cutoff timezone.** UTC or the account's zone?",
+        }),
+      ]),
+    );
+    render(<Composer {...composerProps()} />);
+    startComment("Q2", "Report cutoff timezone");
+    await screen.findByTestId("item-comment-mode");
+
+    expect(screen.getByRole("region", { name: "Q2 text" }).textContent).toContain(
+      "UTC or the account's zone?",
+    );
+    const actions = screen.getByTestId("composer-action-row");
+    expect(within(actions).getByRole("button", { name: "Save comment" })).toHaveAttribute(
+      "type",
+      "submit",
+    );
+    expect(within(actions).queryByRole("button", { name: /^Send/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Q2 text" }));
+    expect(screen.queryByRole("region", { name: "Q2 text" })).toBeNull();
+  });
+
+  it("keeps the action row's send button for messages and names the typed message on the tray's", async () => {
+    render(<Composer {...composerProps()} />);
+    startComment("R1", "Backfill locking");
+    await screen.findByTestId("item-comment-mode");
+    fireEvent.change(textarea(), { target: { value: "Batch it." } });
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+
+    const send = screen.getByTestId("submit-item-comments");
+    expect(send).toHaveAccessibleName("Send 1 comment");
+    expect(
+      within(screen.getByTestId("composer-action-row")).queryByTestId("submit-item-comments"),
+    ).toBeNull();
+    fireEvent.change(textarea(), { target: { value: "Thanks." } });
+    expect(send).toHaveAccessibleName("Send 1 comment + message");
+    expect(send).toHaveAccessibleDescription("The message you typed goes along as a General note.");
+  });
+
+  it("leaves comment mode on Escape and keeps what was typed as a draft", async () => {
+    const onStop = vi.fn();
+    render(<Composer {...composerProps({ isWorking: true, status: "streaming", onStop })} />);
+    startComment("R1", "Backfill locking");
+    await screen.findByTestId("item-comment-mode");
+    fireEvent.change(textarea(), { target: { value: "Run it at night." } });
+
+    fireEvent.keyDown(textarea(), { key: "Escape" });
+
+    expect(screen.queryByTestId("item-comment-mode")).toBeNull();
+    expect(getItemCommentState("conv_comments").drafts.map((draft) => draft.text)).toEqual([
+      "Run it at night.",
+    ]);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("submits the drafts and the typed message as one message through onSend", async () => {
+    const onSend = vi.fn();
+    render(<Composer {...composerProps({ onSend })} />);
+    startComment("R1", "Backfill locking");
+    await screen.findByTestId("item-comment-mode");
+    fireEvent.change(textarea(), { target: { value: "Batch it." } });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File(["lock"], "image.png", { type: "image/png" })] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
+    fireEvent.change(textarea(), { target: { value: "Thanks." } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 comment + message" }));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    const [text, files] = onSend.mock.calls[0];
+    expect(text).toBe(
+      [
+        "Comments on 1 item:",
+        "#### [R1] Backfill locking",
+        "Batch it.",
+        "Attachments: r1-1.png",
+        "#### General",
+        "Thanks.",
+      ].join("\n\n"),
+    );
+    expect((files as File[]).map((file) => file.name)).toEqual(["r1-1.png"]);
+    expect(textarea()).toHaveValue("");
+    expect(screen.queryByTestId("item-comment-tray")).toBeNull();
   });
 });
 

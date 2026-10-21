@@ -11,6 +11,7 @@ import {
   struckItemLabelsIn,
   type ItemLabelSource,
 } from "./itemLabels";
+import { buildItemCommentMessage, scanItemLabelSource } from "./itemComments";
 
 describe("itemLabelsIn", () => {
   it("finds distinct labels in order and ignores code, links, and non-label brackets", () => {
@@ -172,6 +173,97 @@ describe("buildItemLabelIndex", () => {
 
     const several = buildItemLabelIndex([scan(message("m1", "[Q1] One. [Q2] Two."))]);
     expect(several.enabled).toBe(true);
+  });
+});
+
+describe("buildItemLabelIndex comments", () => {
+  const defining = message("a1", "[Q1] Pick a cache. [Q2] Pick a queue.");
+  const review: ItemLabelSource = {
+    messageId: "u1",
+    role: "user",
+    text: buildItemCommentMessage([
+      {
+        label: "Q1",
+        title: "Pick a cache",
+        comments: [
+          { text: "Per-user, please.", attachments: ["q1-1.png"] },
+          { text: "Cap it at 1 GB.", attachments: ["sizes.csv"] },
+        ],
+      },
+    ]),
+    files: [
+      { filename: "q1-1.jpg", fileId: "file_img", image: true },
+      { filename: "sizes.csv", fileId: "file_csv", image: false },
+    ],
+  };
+
+  it("rebuilds each comment with its files and the next agent message's reply", () => {
+    const reply = message(
+      "a2",
+      "Done. [Q1] The cache is now per-user, capped at 1 GB. [Q2] waits.",
+    );
+    const later = message("a3", "[Q1] Also cleaned up old entries.");
+    const index = buildItemLabelIndex([
+      scanItemLabelSource(defining),
+      scanItemLabelSource(review),
+      scanItemLabelSource(message("a-tool", "Running the tests now.")),
+      scanItemLabelSource(reply),
+      scanItemLabelSource(later),
+    ]);
+    const comments = index.items.get("Q1")?.comments ?? [];
+    expect(comments.map((comment) => comment.text)).toEqual([
+      "Per-user, please.",
+      "Cap it at 1 GB.",
+    ]);
+    // The re-encoded image matches by stem; the CSV by name.
+    expect(comments[0].attachments).toEqual([
+      { filename: "q1-1.jpg", fileId: "file_img", image: true },
+    ]);
+    expect(comments[1].attachments[0].fileId).toBe("file_csv");
+    // Only the agent message right after the comment counts, and it doesn't mention Q1.
+    expect(comments[0].reply).toBeNull();
+    expect(index.items.get("Q2")?.comments).toEqual([]);
+  });
+
+  it("takes the reply sentence from the agent message that follows", () => {
+    const reply = message(
+      "a2",
+      "Done. [Q1] The cache is now per-user, capped at 1 GB. [Q2] waits.",
+    );
+    const index = buildItemLabelIndex([
+      scanItemLabelSource(defining),
+      scanItemLabelSource(review),
+      scanItemLabelSource(reply),
+    ]);
+    expect(index.items.get("Q1")?.comments[1].reply).toEqual({
+      source: reply,
+      sentence: "[Q1] The cache is now per-user, capped at 1 GB.",
+    });
+  });
+
+  it("keeps a closed item closed when a comment heading mentions it", () => {
+    const closing = message("a2", "~~[Q1]~~ settled: per-user cache.");
+    const index = buildItemLabelIndex([
+      scanItemLabelSource(defining),
+      scanItemLabelSource(closing),
+      scanItemLabelSource(review),
+    ]);
+    const entry = index.items.get("Q1");
+    expect(entry?.closedBy).toBe(closing);
+    expect(entry?.messageCount).toBe(3);
+    expect(entry?.comments).toHaveLength(2);
+
+    const plain: ItemLabelSource = {
+      messageId: "u2",
+      role: "user",
+      text: "#### [Q1] Pick a cache\n\nOn second thought, [Q1] needs another look.",
+    };
+    const reopened = buildItemLabelIndex([
+      scanItemLabelSource(defining),
+      scanItemLabelSource(closing),
+      scanItemLabelSource(plain),
+    ]);
+    expect(reopened.items.get("Q1")?.closedBy).toBeNull();
   });
 });
 

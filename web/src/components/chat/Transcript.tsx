@@ -31,7 +31,12 @@ import { ArcaShutdownBanner } from "@/components/ArcaShutdownBanner";
 import { useArcaShutdownBanner } from "@/hooks/useArcaShutdownBanner";
 import { useSearchParams } from "@/lib/routing";
 import { MESSAGE_QUERY_PARAM } from "@/lib/messageDeepLink";
-import { ItemLabelIndexContext } from "@/lib/itemLabels";
+import {
+  ItemLabelIndexContext,
+  ItemLabelSessionContext,
+  type ItemLabelIndex,
+} from "@/lib/itemLabels";
+import { publishItemLabelIndex } from "@/lib/itemCommentDrafts";
 import { useMessageDeepLink } from "@/hooks/useMessageDeepLink";
 import { useUserMessageNav } from "@/hooks/useUserMessageNav";
 import { ChatPlanAccordion } from "@/shell/ChatPlanAccordion";
@@ -323,10 +328,15 @@ function TranscriptImpl({
     () => buildBubbleItemLabelIndex(display.bubbles),
     [display.bubbles],
   );
+  // The composer renders apart from the transcript; it orders and titles
+  // comment drafts from the index published here.
+  useEffect(() => {
+    if (display.conversationId) publishItemLabelIndex(display.conversationId, itemLabelIndex);
+  }, [display.conversationId, itemLabelIndex]);
   const hasOpenItems = itemLabelIndex.enabled && itemLabelIndex.items.size > 0;
   const hasPinnedBanner = display.hasTasks || hasOpenItems || showArcaBanner;
   return (
-    <ItemLabelIndexContext.Provider value={itemLabelIndex}>
+    <ItemLabelScope index={itemLabelIndex} sessionId={display.conversationId ?? null}>
       {/* Task tracker pinned above the thread. Sibling of the viewport (not an
       overlay) so it shrinks the scroll area rather than covering messages.
       Self-hides with no tasks. */}
@@ -465,6 +475,25 @@ function TranscriptImpl({
           />
         )}
       </div>
+    </ItemLabelScope>
+  );
+}
+
+/** Gives the transcript's item labels their index, and the session their drafts belong to. */
+function ItemLabelScope({
+  index,
+  sessionId,
+  children,
+}: {
+  index: ItemLabelIndex;
+  sessionId: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <ItemLabelIndexContext.Provider value={index}>
+      <ItemLabelSessionContext.Provider value={sessionId}>
+        {children}
+      </ItemLabelSessionContext.Provider>
     </ItemLabelIndexContext.Provider>
   );
 }

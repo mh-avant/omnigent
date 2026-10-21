@@ -2,7 +2,8 @@
 // attaches to an item when it first raises it, then reuses to refer back to it.
 // The first message carrying a label defines the item; later mentions render as
 // chips that preview the defining block without scrolling the transcript. A
-// struck-through mention (`~~[Q3]~~`) closes the item; the newest mention wins.
+// struck-through mention (`~~[Q3]~~`) closes the item; the newest mention wins,
+// except a user's comment heading (`#### [Q3] …`), which leaves the state alone.
 
 import { createContext } from "react";
 
@@ -18,12 +19,40 @@ function itemLabelPattern(): RegExp {
   return new RegExp(ITEM_LABEL_SOURCE, "g");
 }
 
+/** A file sent with a transcript message. */
+export interface ItemLabelFile {
+  filename: string;
+  /** Session file id; absent when the transcript kept only the name. */
+  fileId?: string;
+  image: boolean;
+}
+
 /** A transcript message that may define item labels. */
 export interface ItemLabelSource {
   messageId: string;
   role: "user" | "assistant";
   text: string;
   createdAtS?: number;
+  /** Who wrote a user message, when the transcript records it. */
+  author?: string;
+  /** Files sent with a user message. */
+  files?: readonly ItemLabelFile[];
+}
+
+/** One comment inside a `#### [Q2] <title>` section of a user message. */
+export interface ItemCommentPart {
+  /** Its `**N.**` number when the section holds several comments. */
+  number: number | null;
+  text: string;
+  /** File names from the comment's `Attachments:` line. */
+  attachments: readonly string[];
+}
+
+/** A user message's comments on one item. */
+export interface ItemCommentSection {
+  label: string;
+  title: string;
+  comments: readonly ItemCommentPart[];
 }
 
 /** What one message says about labels. */
@@ -33,6 +62,20 @@ export interface ItemLabelScan {
   labels: readonly string[];
   /** Labels this message mentions struck through. */
   struck: readonly string[];
+  /** Comment sections in a user message. */
+  comments?: readonly ItemCommentSection[];
+  /** Labels this message mentions only in comment headings. */
+  commentHeadingOnly?: readonly string[];
+}
+
+/** A comment on an item, rebuilt from the user message that sent it. */
+export interface ItemLabelComment {
+  source: ItemLabelSource;
+  text: string;
+  /** Its files, matched by name to the message's file blocks where possible. */
+  attachments: readonly ItemLabelFile[];
+  /** The next agent message's first sentence about the item, if it has one. */
+  reply: { source: ItemLabelSource; sentence: string } | null;
 }
 
 /** One labelled item across the transcript. */
@@ -44,6 +87,8 @@ export interface ItemLabelEntry {
   closedBy: ItemLabelSource | null;
   /** How many messages mention the label. */
   messageCount: number;
+  /** Comments sent on the item, oldest first. */
+  comments: ItemLabelComment[];
 }
 
 export interface ItemLabelIndex {
@@ -62,28 +107,77 @@ export const ItemLabelIndexContext = createContext<ItemLabelIndex | null>(null);
 /** Id of the message whose markdown is being rendered. */
 export const ItemLabelMessageContext = createContext<string | null>(null);
 
-/** Builds the index from messages in transcript order; the first definition wins. */
+/** The session whose transcript is rendering labels, for its comment drafts. */
+export const ItemLabelSessionContext = createContext<string | null>(null);
+
+function stemOf(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot > 0 ? filename.slice(0, dot) : filename;
+}
+
+/**
+ * Matches an `Attachments:` name to the message's file blocks: by name, then by
+ * stem (the server may re-encode an image under a new extension). Native
+ * transcripts keep no file blocks, so the name alone is what's left.
+ */
+function matchAttachment(name: string, files: readonly ItemLabelFile[]): ItemLabelFile {
+  return (
+    files.find((file) => file.filename === name) ??
+    files.find((file) => stemOf(file.filename) === stemOf(name)) ?? {
+      filename: name,
+      image: /\.(?:png|jpe?g|gif|webp|svg)$/i.test(name),
+    }
+  );
+}
+
+/**
+ * Builds the index from messages in transcript order; the first definition
+ * wins. Pass every user and agent message, labelled or not, so a comment's
+ * reply is looked up in the agent message that directly follows it.
+ */
 export function buildItemLabelIndex(scans: Iterable<ItemLabelScan>): ItemLabelIndex {
   const items = new Map<string, ItemLabelEntry>();
   let enabled = false;
-  for (const { source, labels, struck } of scans) {
+  let awaitingReply: { label: string; comment: ItemLabelComment }[] = [];
+  for (const { source, labels, struck, comments, commentHeadingOnly } of scans) {
     if (labels.length > 1) enabled = true;
     for (const label of labels) {
       const closedBy = struck.includes(label) ? source : null;
       const entry = items.get(label);
       if (!entry) {
-        items.set(label, { label, source, closedBy, messageCount: 1 });
+        items.set(label, { label, source, closedBy, messageCount: 1, comments: [] });
         continue;
       }
-      entry.closedBy = closedBy;
+      if (!commentHeadingOnly?.includes(label)) entry.closedBy = closedBy;
       entry.messageCount += 1;
       enabled = true;
+    }
+    if (source.role === "assistant") {
+      for (const { label, comment } of awaitingReply) {
+        const sentence = labels.includes(label) ? extractLabelSentence(source.text, label) : null;
+        if (sentence) comment.reply = { source, sentence };
+      }
+      awaitingReply = [];
+    }
+    for (const section of comments ?? []) {
+      const entry = items.get(section.label);
+      if (!entry) continue;
+      for (const part of section.comments) {
+        const comment: ItemLabelComment = {
+          source,
+          text: part.text,
+          attachments: part.attachments.map((name) => matchAttachment(name, source.files ?? [])),
+          reply: null,
+        };
+        entry.comments.push(comment);
+        awaitingReply.push({ label: section.label, comment });
+      }
     }
   }
   return { enabled, items };
 }
 
-interface ScannedLine {
+export interface ScannedLine {
   text: string;
   /** Inside a fenced code block, or one of its fence lines. */
   inFence: boolean;
@@ -91,7 +185,8 @@ interface ScannedLine {
 
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
 
-function scanLines(markdown: string): ScannedLine[] {
+/** Splits markdown into lines, marking those inside fenced code blocks. */
+export function scanLines(markdown: string): ScannedLine[] {
   const lines: ScannedLine[] = [];
   let fence: string | null = null;
   for (const text of markdown.split("\n")) {
@@ -113,7 +208,8 @@ function withoutInlineCode(line: string): string {
   return line.replace(/(`+)[^`]*?\1/g, (span) => " ".repeat(span.length));
 }
 
-function labelsInLine(line: string): string[] {
+/** The labels one line mentions, in order, ignoring inline code. */
+export function labelsInLine(line: string): string[] {
   return Array.from(withoutInlineCode(line).matchAll(itemLabelPattern()), (match) => match[1]);
 }
 

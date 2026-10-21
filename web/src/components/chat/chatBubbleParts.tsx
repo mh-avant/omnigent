@@ -62,6 +62,7 @@ import {
   imagePreview,
   isTextBlock,
   keyedAttachments,
+  PENDING_FILE_PREFIX,
 } from "@/lib/blocks";
 import { type Bubble, type RenderItem, bubblesEqual } from "@/lib/renderItems";
 import { getCurrentAuthorId } from "@/lib/identity";
@@ -84,12 +85,12 @@ import { buildMessageDeepLink } from "@/lib/messageDeepLink";
 import {
   ItemLabelMessageContext,
   buildItemLabelIndex,
-  itemLabelsIn,
-  struckItemLabelsIn,
+  type ItemLabelFile,
   type ItemLabelIndex,
   type ItemLabelScan,
   type ItemLabelSource,
 } from "@/lib/itemLabels";
+import { scanItemLabelSource } from "@/lib/itemComments";
 import { copyText } from "@/lib/clipboard";
 import { copyMarkdown } from "@/lib/copyMarkdown";
 import { showToast } from "@/components/ui/toast";
@@ -179,35 +180,57 @@ export function collectBubbleMarkdown(items: RenderItem[]): string {
 // Finalized bubbles are reused by reference across rebuilds, so each is scanned once.
 const itemLabelScans = new WeakMap<Bubble, ItemLabelScan>();
 
+function userMessageFiles(content: MessageContentBlock[]): ItemLabelFile[] {
+  return content.flatMap((block): ItemLabelFile[] => {
+    if (block.type !== "input_image" && block.type !== "input_file") return [];
+    if (!block.filename) return [];
+    return [
+      {
+        filename: block.filename,
+        image: block.type === "input_image",
+        // An upload still in flight has no session file to show yet.
+        ...(block.file_id && !block.file_id.startsWith(PENDING_FILE_PREFIX)
+          ? { fileId: block.file_id }
+          : {}),
+      },
+    ];
+  });
+}
+
 function scanBubbleItemLabels(bubble: Bubble): ItemLabelScan | null {
   if (bubble.kind !== "user" && bubble.kind !== "assistant") return null;
   const cached = itemLabelScans.get(bubble);
   if (cached) return cached;
   const source: ItemLabelSource =
     bubble.kind === "user"
-      ? { messageId: bubble.itemId, role: "user", text: extractUserText(bubble.content) }
+      ? {
+          messageId: bubble.itemId,
+          role: "user",
+          text: extractUserText(bubble.content),
+          files: userMessageFiles(bubble.content),
+          ...(bubble.createdBy ? { author: bubble.createdBy } : {}),
+        }
       : {
           messageId: bubble.responseId,
           role: "assistant",
           text: collectBubbleMarkdown(bubble.items),
         };
   if (bubble.createdAtS !== undefined) source.createdAtS = bubble.createdAtS;
-  const labels = itemLabelsIn(source.text);
-  const scan = {
-    source,
-    labels,
-    struck: labels.length > 0 ? struckItemLabelsIn(source.text) : [],
-  };
+  const scan = scanItemLabelSource(source);
   itemLabelScans.set(bubble, scan);
   return scan;
 }
 
-/** Maps each item label in the transcript to the message that first carried it. */
+/**
+ * Maps each item label in the transcript to the message that first carried it,
+ * with the comments sent on it. Unlabelled messages stay in, so a comment's
+ * reply is read from the agent message right after it.
+ */
 export function buildBubbleItemLabelIndex(bubbles: readonly Bubble[]): ItemLabelIndex {
   return buildItemLabelIndex(
     bubbles.flatMap((bubble) => {
       const scan = scanBubbleItemLabels(bubble);
-      return scan && scan.labels.length > 0 ? [scan] : [];
+      return scan ? [scan] : [];
     }),
   );
 }

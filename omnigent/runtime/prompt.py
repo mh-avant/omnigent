@@ -82,7 +82,17 @@ ITEM_LABEL_INSTRUCTION = (
     'rows as-is, per your answer"). Close each item once, as soon as it is '
     "settled. After that, write its label struck through whenever you mention it "
     "again; a plain mention reopens it. The chat UI pins a list of open items, so "
-    "closing settled ones keeps that list accurate."
+    "closing settled ones keeps that list accurate.\n\n"
+    "Item comments: the user can comment on several items in one message. It "
+    'starts "Comments on N items:" and has one "#### [Q2] <title>" section per '
+    "item. Numbered parts (**1.**, **2.**) are separate comments on that item, "
+    'an "Attachments:" line names the files sent with that comment, and a '
+    '"#### General" section is about the whole message. Answer the items in the '
+    'order given, and start each answer with its label ("[Q2] Cutoffs now use '
+    'the account zone.") so the chat UI can show it under the comment. Close any '
+    "item the comment settles, as above. A comment on a closed item doesn't "
+    "reopen it; if the comment asks for more work, mention the label plainly to "
+    "reopen it."
 )
 
 
