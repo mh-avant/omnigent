@@ -469,6 +469,33 @@ production / customer-facing work goes through the workspace
 (API tier + Gateway), individual experimentation can use consumer
 subscriptions but is out of band for compliance.
 
+### Session request tags
+
+When a harness sends inference to a Databricks Unity Gateway URL
+(`https://<id>.ai-gateway.cloud.databricks.com/...` or
+`https://<workspace>/ai-gateway/...`), Omnigent adds the
+[`Databricks-Ai-Gateway-Request-Tags`](https://docs.databricks.com/aws/en/ai-gateway/request-tagging)
+header to each request. Its value is a JSON object holding the session id
+(`omnigent_session_id`) and the session's user labels, so you can group or
+join the `request_tags` column of the usage tracking and inference tables by
+session:
+
+```text
+Databricks-Ai-Gateway-Request-Tags: {"omnigent_session_id":"conv_abc123","team":"ml"}
+```
+
+- Omnigent's own labels (`omnigent.*`, `cost_control.*` and `omni_project`)
+  are not sent. Past 8 KiB, labels are dropped in key order; the session id
+  is always kept.
+- Covered harnesses: claude-native, claude-sdk, codex, codex-native and pi.
+  Other gateways and providers never receive the header.
+- Harness processes and native CLIs read the tags when they start, so a label
+  edit shows up in requests after the harness or terminal is next launched.
+- Set `OMNIGENT_GATEWAY_REQUEST_TAGS=0` in the environment of the host daemon
+  (or of `omnigent claude` / `omnigent codex`) to stop sending it. The host
+  forwards it to its runners, and `omnigent host enable` keeps it in the
+  service definition. Restart the host, then start a new session.
+
 ### What you get on Databricks vs raw provider calls
 
 | Capability | Raw provider call from omnigent | Through Unity Gateway |
@@ -617,6 +644,7 @@ explicit consent and PII handling in place.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Workspace URL (same as `DATABRICKS_HOST`) | Apps env |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Bearer $DATABRICKS_TOKEN` | Apps env |
 | `OMNIGENT_OTEL_CAPTURE_CONTENT` | `true` to include message bodies in traces | Apps env (default off) |
+| `OMNIGENT_GATEWAY_REQUEST_TAGS` | `0` to stop tagging Unity Gateway requests with the session id and labels | Host daemon or CLI env (default on) |
 
 ---
 

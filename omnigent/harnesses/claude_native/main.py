@@ -87,9 +87,11 @@ from omnigent.cli_invocation import cli_invocation
 from omnigent.conversation_browser import conversation_url, open_conversation_link_if_enabled
 from omnigent.databricks_ai_gateway import (
     CLAUDE_CODE_AGENT,
+    gateway_request_tags_value,
     is_databricks_ai_gateway_url,
     is_ug_route,
     with_gateway_attribution_lines,
+    with_gateway_request_tags_line,
 )
 from omnigent.entities.session_resources import terminal_resource_id
 from omnigent.harnesses.claude_native.bridge import (
@@ -696,6 +698,39 @@ def claude_config_with_routed_arms_pinned(
     if not repinned:
         return claude_config
     _logger.info("native-claude: pinned routed arms onto family aliases: %s", repinned)
+    return replace(claude_config, env=env)
+
+
+def claude_config_with_gateway_request_tags(
+    claude_config: ClaudeNativeUcodeConfig | None,
+    *,
+    session_id: str,
+    labels: Mapping[str, str] | None,
+) -> ClaudeNativeUcodeConfig | None:
+    """Tag a Unity Gateway launch's requests with the session id and labels.
+
+    Claude Code reads ``ANTHROPIC_CUSTOM_HEADERS`` once at start, so label
+    edits reach the header when the terminal is next launched.
+
+    :param claude_config: Resolved provider config for the terminal, or ``None``.
+    :param session_id: Omnigent session id, e.g. ``"conv_abc123"``.
+    :param labels: The session's labels; only user labels are sent.
+    :returns: ``claude_config`` itself off the Unity Gateway or when opted out,
+        otherwise a copy whose custom headers carry the request tags.
+    """
+    if claude_config is None:
+        return None
+    base_url = claude_config.env.get(_UCODE_CLAUDE_BASE_URL_ENV)
+    if not base_url or not is_databricks_ai_gateway_url(base_url):
+        return claude_config
+    tags_value = gateway_request_tags_value(session_id, labels)
+    if tags_value is None:
+        return claude_config
+    existing = claude_config.env.get(_CLAUDE_CODE_CUSTOM_HEADERS_ENV) or os.environ.get(
+        _CLAUDE_CODE_CUSTOM_HEADERS_ENV
+    )
+    env = dict(claude_config.env)
+    env[_CLAUDE_CODE_CUSTOM_HEADERS_ENV] = with_gateway_request_tags_line(existing, tags_value)
     return replace(claude_config, env=env)
 
 
@@ -5124,6 +5159,8 @@ async def _prepare_claude_terminal(
         # single ``cold_resumed`` flag covers both.
         cold_resumed = False
         bridge_id: str | None = None
+        # A new session carries only internal labels, so it tags just the session id.
+        session_labels: dict[str, str] = {}
         if session_id is not None:
             record_startup_event("session_resolved", session_id=session_id)
         if session_id is None:
@@ -5153,13 +5190,13 @@ async def _prepare_claude_terminal(
                 startup_progress=startup_progress,
                 progress_message="Loading Claude session...",
             )
-            labels = await _fetch_claude_session_labels(client, session_id)
+            session_labels = await _fetch_claude_session_labels(client, session_id)
             _mark_startup_step(
                 startup_profiler,
                 "resume session labels fetched",
                 startup_progress=startup_progress,
             )
-            bridge_id = labels.get(BRIDGE_ID_LABEL_KEY) or session_id
+            bridge_id = session_labels.get(BRIDGE_ID_LABEL_KEY) or session_id
             _mark_startup_step(
                 startup_profiler,
                 "checking existing terminal",
@@ -5247,7 +5284,9 @@ async def _prepare_claude_terminal(
             (*cold_resume_args, *claude_args),
             command=command,
             bridge_dir=bridge_dir,
-            claude_config=claude_config,
+            claude_config=claude_config_with_gateway_request_tags(
+                claude_config, session_id=session_id, labels=session_labels
+            ),
             append_system_prompt=append_system_prompt,
         )
         record_startup_event("terminal_available", session_id=session_id)

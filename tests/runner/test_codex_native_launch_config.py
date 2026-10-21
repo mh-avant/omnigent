@@ -285,6 +285,7 @@ async def test_happy_path_parses_full_config(
             "omnigent.fork.source_external_session_id": "thread_src",
             "omnigent.fork.carry_history": "1",
             "omnigent.codex_native.bypass_sandbox": "1",
+            "team": "ml",
         },
     }
     client = _Client(_Resp(200, snapshot))
@@ -304,6 +305,7 @@ async def test_happy_path_parses_full_config(
     assert cfg.fork_source_external_id == "thread_src"
     assert cfg.fork_carry_history is True, "carry_history label '1' should parse to True."
     assert cfg.bypass_sandbox is True, "bypass_sandbox label '1' should parse to True."
+    assert cfg.labels["team"] == "ml", "Labels feed the Unity Gateway request tags."
     assert cfg.auto_harness is True
     assert cfg.routing_enabled is True
     assert cfg.turn_routing is True

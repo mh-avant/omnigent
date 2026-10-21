@@ -4574,6 +4574,8 @@ def test_materialize_codex_provider_config_attributes_unity_gateway_providers(
         f'[model_providers.Databricks]\nbase_url = "{gateway_url}"\n\n'
         "[model_providers.Databricks.http_headers]\n"
         'User-Agent = "ucode/0.1.0 codex/0.145.0"\n\n'
+        "[model_providers.Databricks.env_http_headers]\n"
+        'X-Team = "TEAM_ENV"\n\n'
         '[model_providers.other]\nbase_url = "https://openrouter.ai/api/v1"\n'
     )
 
@@ -4595,6 +4597,11 @@ def test_materialize_codex_provider_config_attributes_unity_gateway_providers(
         "Databricks-Custom-Client-Surfaces": "omnigent",
     }
     assert "http_headers" not in providers["other"]
+    # Codex sends the session's request tags from the env the runner hands it.
+    tags_mapping = {"Databricks-Ai-Gateway-Request-Tags": "OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE"}
+    assert providers["Databricks"]["env_http_headers"] == {"X-Team": "TEAM_ENV", **tags_mapping}
+    assert providers["omnigent_databricks"]["env_http_headers"] == tags_mapping
+    assert "env_http_headers" not in providers["other"]
 
 
 # ---------------------------------------------------------------------------
@@ -4707,6 +4714,17 @@ def test_clean_codex_env_includes_omnigent_session_marker(monkeypatch) -> None:
     env = _clean_codex_env()
 
     assert env.get(OMNIGENT_SESSION_ENV_VAR) == OMNIGENT_SESSION_ENV_VALUE
+
+
+def test_clean_codex_env_keeps_the_runner_request_tags(monkeypatch) -> None:
+    """The request tags the runner hands the harness reach codex's env_http_headers."""
+    from omnigent.inner.codex_executor import _clean_codex_env
+
+    monkeypatch.setenv("OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE", '{"omnigent_session_id":"conv_1"}')
+
+    env = _clean_codex_env()
+
+    assert env["OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE"] == '{"omnigent_session_id":"conv_1"}'
 
 
 # ---------------------------------------------------------------------------

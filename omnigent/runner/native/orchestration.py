@@ -646,6 +646,7 @@ class _CodexNativeLaunchConfig:
         reads. A session the forwarder rotated onto carries the original
         session's id here. ``None`` when unlabelled: the bridge is then keyed
         by the session id.
+    :param labels: The session's labels, for the Unity Gateway request tags.
     """
 
     workspace: Path
@@ -662,6 +663,7 @@ class _CodexNativeLaunchConfig:
     turn_routing: bool = False
     reasoning_effort: str | None = None
     bridge_id: str | None = None
+    labels: Mapping[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1469,6 +1471,11 @@ async def _codex_native_launch_config(
         turn_routing=routing_class.turn_routing,
         reasoning_effort=reasoning_effort,
         bridge_id=bridge_id,
+        labels=(
+            {str(key): str(value) for key, value in labels.items()}
+            if isinstance(labels, dict)
+            else {}
+        ),
     )
 
 
@@ -5513,6 +5520,7 @@ async def _auto_create_codex_terminal(
         terminal_launch_args=launch_config.terminal_launch_args or (),
         reasoning_effort=launch_config.reasoning_effort,
         model_catalog_rows=_fresh_codex_catalog,
+        session_labels=launch_config.labels,
         # Codex can show project-trust and legacy-model migration prompts before
         # creating a thread. This TUI runs detached for the web UI, so persist
         # the runner-owned acknowledgements in the private session config.
@@ -8331,6 +8339,8 @@ class _ClaudeSessionLaunchMetadata:
     external_session_id: str | None = None
     fork_source_external_id: str | None = None
     fork_carry_history: bool = False
+    #: The session's labels, for the Unity Gateway request tags.
+    labels: Mapping[str, str] = dataclasses.field(default_factory=dict)
     #: Both routing fields come from ``routing_class_from_snapshot``, so an
     #: auto-harness session always reads as routing-enabled too. Deriving them
     #: separately was the bug: a sub-agent child of a routed parent carries the
@@ -8378,6 +8388,7 @@ def _claude_launch_metadata_from_envelope(
             fork_source if isinstance(fork_source, str) and fork_source else None
         ),
         fork_carry_history=snapshot.labels.get(FORK_CARRY_HISTORY_LABEL_KEY) == "1",
+        labels=dict(snapshot.labels),
     )
 
 
@@ -8444,6 +8455,7 @@ async def _load_legacy_claude_launch_metadata(
             fork_source if isinstance(fork_source, str) and fork_source else None
         ),
         fork_carry_history=labels.get(FORK_CARRY_HISTORY_LABEL_KEY) == "1",
+        labels={str(key): str(value) for key, value in labels.items()},
     )
     permission_mode = _claude_launch_permission_mode(metadata.terminal_launch_args)
     _logger.info(
@@ -8745,6 +8757,7 @@ async def _auto_create_claude_terminal(
 
     from omnigent.harnesses.claude_native.main import (
         build_native_claude_terminal_env,
+        claude_config_with_gateway_request_tags,
         claude_config_with_launch_model_pinned,
         claude_config_with_routed_arms_pinned,
         resolve_claude_native_model_selection,
@@ -9325,7 +9338,11 @@ async def _auto_create_claude_terminal(
         # Tool Search env plus ucode gateway env (ANTHROPIC_BASE_URL
         # etc.) when derived. Empty provider config still forces
         # ENABLE_TOOL_SEARCH=true so MCP schemas are loaded on demand.
-        env=build_native_claude_terminal_env(claude_config),
+        env=build_native_claude_terminal_env(
+            claude_config_with_gateway_request_tags(
+                claude_config, session_id=session_id, labels=launch_metadata.labels
+            )
+        ),
         # Names to strip (see ``_claude_terminal_env_unset``). Dropping
         # ``DATABRICKS_CONFIG_PROFILE`` matters because Claude's MCP servers
         # inherit this env and several build ``WorkspaceClient`` without pinning

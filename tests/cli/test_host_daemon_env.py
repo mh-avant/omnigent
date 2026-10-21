@@ -227,6 +227,7 @@ def test_runner_env_explicit_proxy_passthrough_remains_available() -> None:
         ("OMNIGENT_FEATURES", "usage_page,claude_osc_status", True),
         ("OMNIGENT_FEATURES", "usage_page,-claude_osc_status", False),
         ("OMNIGENT_FEATURES", "-claude_osc_status,claude_osc_status", False),
+        ("OMNIGENT_GATEWAY_REQUEST_TAGS", "0", True),
     ],
 )
 def test_release_controls_reach_daemon_and_runner(

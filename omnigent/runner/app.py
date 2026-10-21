@@ -39,6 +39,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from omnigent.acp_cli_harnesses import ACP_CLI_HARNESSES
+from omnigent.databricks_ai_gateway import gateway_request_tags_enabled, gateway_request_tags_env
 from omnigent.debug_logging import (
     debug_event,
     phase_scope,
@@ -2599,6 +2600,13 @@ def create_runner_app(
                     session_id, "failed", error={"code": exc.code, "message": str(exc)}
                 )
                 raise
+            spawn_env = await _with_gateway_request_tags(
+                spawn_env,
+                harness=harness_name,
+                session_id=session_id,
+                labels=init_context.labels,
+                server_client=server_client,
+            )
             if spawn_env is None:
                 spawn_env = await _resolve_native_spawn_env(
                     harness_name,
@@ -5515,6 +5523,13 @@ def create_runner_app(
                     },
                 )
 
+        spawn_env = await _with_gateway_request_tags(
+            spawn_env,
+            harness=harness_name,
+            session_id=conv_id,
+            labels=startup_labels,
+            server_client=server_client,
+        )
         if spawn_env is None:
             spawn_env = await _resolve_native_spawn_env(
                 harness_name,
@@ -8310,6 +8325,52 @@ def _build_spawn_env_from_spec(
             extra={"session_id": session_id},
         )
     return env
+
+
+def _spawn_env_may_reach_unity_gateway(harness: str, spawn_env: Mapping[str, str]) -> bool:
+    """Whether an SDK harness spawned with *spawn_env* may send Unity Gateway requests.
+
+    claude-sdk and pi reach a gateway only behind their ``HARNESS_*_GATEWAY``
+    flag; codex may also route through a provider in the user's Codex config.
+    """
+    if harness == "codex":
+        return True
+    if harness in ("claude-sdk", "pi"):
+        return spawn_env.get(f"HARNESS_{harness.upper().replace('-', '_')}_GATEWAY") == "true"
+    return False
+
+
+async def _with_gateway_request_tags(
+    spawn_env: dict[str, str] | None,
+    *,
+    harness: str,
+    session_id: str,
+    labels: Mapping[str, str] | None,
+    server_client: httpx.AsyncClient | None,
+) -> dict[str, str] | None:
+    """Hand an SDK harness the session's Unity Gateway request tags.
+
+    The harness reads them once at spawn, so label edits reach the header
+    when the harness process is next spawned.
+
+    :param spawn_env: The harness spawn env, or ``None`` for a native harness.
+    :param harness: Canonical harness name, e.g. ``"claude-sdk"``.
+    :param session_id: Session/conversation id.
+    :param labels: Labels from the init envelope, or ``None`` to fetch them.
+    :param server_client: Runner's server client for the label fetch.
+    :returns: *spawn_env* plus the request-tags env, or *spawn_env* unchanged.
+    """
+    if (
+        spawn_env is None
+        or not _spawn_env_may_reach_unity_gateway(harness, spawn_env)
+        or not gateway_request_tags_enabled()
+    ):
+        return spawn_env
+    if labels is None and server_client is not None:
+        labels = await _session_labels_for_runner_spawn(
+            server_client=server_client, session_id=session_id
+        )
+    return {**spawn_env, **gateway_request_tags_env(session_id, labels)}
 
 
 # ── Agent-start policy gate ────────────────────────────────────────────

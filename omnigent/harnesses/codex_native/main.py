@@ -1190,6 +1190,8 @@ async def _prepare_codex_terminal(
     async with open_server_client(base_url, headers=headers, timeout=timeout) as client:
         bridge_id: str
         thread_id: str | None = None
+        # A new session carries only internal labels, so it tags just the session id.
+        session_labels: dict[str, str] = {}
         if session_id is None:
             if session_bundle is None:
                 raise click.ClickException("Creating a Codex session requires a session bundle.")
@@ -1208,6 +1210,7 @@ async def _prepare_codex_terminal(
                     f"Conversation {session_id!r} is not a codex-native session."
                 )
             bridge_id = str(labels.get(CODEX_NATIVE_BRIDGE_ID_LABEL_KEY) or session_id)
+            session_labels = {str(key): str(value) for key, value in labels.items()}
             existing_terminal = await _find_running_codex_terminal(client, session_id)
             external_session_id = payload.get("external_session_id")
             thread_id = external_session_id if isinstance(external_session_id, str) else None
@@ -1287,6 +1290,7 @@ async def _prepare_codex_terminal(
             ap_auth_headers=headers,
             developer_instructions=developer_instructions,
             terminal_launch_args=codex_args,
+            session_labels=session_labels,
         )
         app_server.listen_url = codex_ws_url
         event_client: CodexAppServerClient | None = None

@@ -565,9 +565,9 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
     bridge_id = _ROTATED_BRIDGE_ID if rotated else session_id
     bridge_dir = codex_native_bridge.bridge_dir_for_bridge_id(bridge_id)
     session_dir = codex_native_bridge.bridge_dir_for_bridge_id(session_id)
-    session_labels: dict[str, str] = (
-        {codex_native_bridge.CODEX_NATIVE_BRIDGE_ID_LABEL_KEY: bridge_id} if rotated else {}
-    )
+    session_labels: dict[str, str] = {"team": "ml"}
+    if rotated:
+        session_labels[codex_native_bridge.CODEX_NATIVE_BRIDGE_ID_LABEL_KEY] = bridge_id
     launch_snapshot = RunnerSessionInitSnapshot(
         created_at=10,
         updated_at=11,
@@ -896,6 +896,8 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
     assert build_calls[0]["developer_instructions"] == (
         f"Be a concise, careful coding assistant.\n\n{ITEM_LABEL_INSTRUCTION}"
     )
+    # The session's labels feed the app-server's Unity Gateway request tags.
+    assert build_calls[0]["session_labels"]["team"] == "ml"
     # Persisted pass-through args must reach launch resolution (--profile layering).
     assert resolve_calls and all(
         call["terminal_launch_args"] == ["--config", "approval_policy=on-request"]

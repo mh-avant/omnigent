@@ -66,3 +66,79 @@ def test_ug_configured_workspace_marks_a_provider_without_a_ug_user_agent(
         "Databricks-Custom-Coding-Agent": "codex",
         "Databricks-Custom-Client-Surfaces": "omnigent, ug",
     }
+
+
+def test_gateway_request_tags_send_the_session_id_and_user_labels_only() -> None:
+    from omnigent.databricks_ai_gateway import gateway_request_tags_value
+
+    labels = {
+        "team": "ml",
+        "project": "chat bot",
+        "omnigent.wrapper": "claude-code-native-ui",
+        "omni_project": "sidebar",
+        "cost_control.plan": "{}",
+        # A label cannot replace the session id.
+        "omnigent_session_id": "spoofed",
+    }
+
+    assert gateway_request_tags_value("conv_abc123", labels) == (
+        '{"omnigent_session_id":"conv_abc123","project":"chat bot","team":"ml"}'
+    )
+
+
+def test_gateway_request_tags_drop_labels_past_the_cap_but_keep_the_session_id() -> None:
+    from omnigent.databricks_ai_gateway import gateway_request_tags, gateway_request_tags_value
+
+    labels = {"a": "x" * 5000, "b": "y" * 5000, "c": "small", "d\n": "é"}
+
+    tags = gateway_request_tags("conv_1", labels)
+
+    assert list(tags) == ["omnigent_session_id", "a", "c", "d\n"]
+    encoded = gateway_request_tags_value("conv_1", labels)
+    assert encoded is not None and encoded.isascii() and "\n" not in encoded
+    assert len(encoded) <= 8 * 1024
+    assert gateway_request_tags("conv_1", {"a": "x" * 9000}) == {"omnigent_session_id": "conv_1"}
+
+
+@pytest.mark.parametrize(
+    ("switch", "enabled"), [(None, True), ("1", True), ("0", False), ("off", False)]
+)
+def test_gateway_request_tags_switch(
+    monkeypatch: pytest.MonkeyPatch, switch: str | None, enabled: bool
+) -> None:
+    from omnigent.databricks_ai_gateway import (
+        REQUEST_TAGS_SWITCH_ENV,
+        REQUEST_TAGS_VALUE_ENV,
+        gateway_request_tags_env,
+        gateway_request_tags_headers,
+    )
+
+    if switch is None:
+        monkeypatch.delenv(REQUEST_TAGS_SWITCH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(REQUEST_TAGS_SWITCH_ENV, switch)
+
+    env = gateway_request_tags_env("conv_1", {"team": "ml"})
+    harness_env = {REQUEST_TAGS_VALUE_ENV: '{"omnigent_session_id":"conv_1"}'}
+    if switch is not None:
+        harness_env[REQUEST_TAGS_SWITCH_ENV] = switch
+
+    assert bool(env) is enabled
+    assert gateway_request_tags_headers(harness_env) == (
+        {"Databricks-Ai-Gateway-Request-Tags": '{"omnigent_session_id":"conv_1"}'}
+        if enabled
+        else {}
+    )
+    assert gateway_request_tags_headers({}) == {}
+
+
+def test_with_gateway_request_tags_line_appends_to_the_claude_block() -> None:
+    from omnigent.databricks_ai_gateway import with_gateway_request_tags_line
+
+    assert with_gateway_request_tags_line(None, '{"omnigent_session_id":"c"}') == (
+        'Databricks-Ai-Gateway-Request-Tags: {"omnigent_session_id":"c"}'
+    )
+    assert with_gateway_request_tags_line("X-A: 1", "{}").splitlines() == [
+        "X-A: 1",
+        "Databricks-Ai-Gateway-Request-Tags: {}",
+    ]

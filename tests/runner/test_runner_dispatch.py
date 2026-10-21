@@ -46,6 +46,7 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import Any, cast
@@ -85,6 +86,7 @@ from omnigent.runner.app import (
     _harness_error_response_error,
     _normalize_turn_error,
     _resolve_harness_config,
+    _with_gateway_request_tags,
 )
 from omnigent.runner.policy_proxy import (
     _evaluate_policy_via_omnigent,
@@ -2129,6 +2131,49 @@ def test_build_spawn_env_routes_hermes(tmp_path: Path, monkeypatch: pytest.Monke
     overridden = _build_spawn_env_from_spec(spec, "hermes", model_override="hermes-4-70b")
     assert overridden is not None
     assert overridden["HARNESS_HERMES_MODEL"] == "hermes-4-70b"
+
+
+@pytest.mark.asyncio
+async def test_sdk_spawn_env_carries_the_session_request_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SDK harnesses that may reach a Unity Gateway get the session's request tags.
+
+    Envelope labels are used as-is; without them the labels are fetched, but
+    only for a harness that could send them.
+    """
+    monkeypatch.delenv("OMNIGENT_GATEWAY_REQUEST_TAGS", raising=False)
+    fetched: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        fetched.append(request.url.path)
+        return httpx.Response(200, json={"labels": {"team": "fetched"}})
+
+    tags_env = "OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE"
+    gateway_claude = {"HARNESS_CLAUDE_SDK_GATEWAY": "true"}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://server"
+    ) as client:
+        tag = partial(_with_gateway_request_tags, session_id="conv_1", server_client=client)
+
+        from_envelope = await tag(gateway_claude, harness="claude-sdk", labels={"team": "ml"})
+        assert from_envelope is not None
+        assert from_envelope[tags_env] == '{"omnigent_session_id":"conv_1","team":"ml"}'
+        assert fetched == []
+
+        direct_claude = await tag(
+            {"HARNESS_CLAUDE_SDK_MODEL": "m"}, harness="claude-sdk", labels=None
+        )
+        assert direct_claude == {"HARNESS_CLAUDE_SDK_MODEL": "m"}
+        assert await tag(None, harness="claude-native", labels=None) is None
+        assert fetched == []
+
+        codex = await tag({}, harness="codex", labels=None)
+        assert codex == {tags_env: '{"omnigent_session_id":"conv_1","team":"fetched"}'}
+        assert fetched == ["/v1/sessions/conv_1/labels"]
+
+        monkeypatch.setenv("OMNIGENT_GATEWAY_REQUEST_TAGS", "0")
+        assert await tag(gateway_claude, harness="claude-sdk", labels={}) == gateway_claude
 
 
 @pytest.mark.asyncio

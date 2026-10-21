@@ -1767,6 +1767,31 @@ class TestResolveGatewayEnv(unittest.TestCase):
         self.assertEqual(env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"], "1")
         self.assertNotIn("CLAUDE_CODE_USE_GATEWAY", env)
 
+    def test_only_databricks_gateway_sends_the_runner_request_tags(self):
+        """The session tags the runner hands the harness reach only a Unity Gateway."""
+        from omnigent.inner.claude_sdk_executor import _resolve_gateway_env
+        from omnigent.inner.databricks_executor import DatabricksCredentials
+
+        tags = '{"omnigent_session_id":"conv_1","team":"ml"}'
+        for host, tagged in (
+            ("https://wkspc.cloud.databricks.com", True),
+            ("https://example.databricks.com", False),
+        ):
+            with (
+                self.subTest(host=host),
+                patch.dict(
+                    "os.environ", {"OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE": tags}, clear=True
+                ),
+                patch(
+                    "omnigent.inner.databricks_executor._read_databrickscfg",
+                    return_value=DatabricksCredentials(host=host, token="t"),
+                ),
+            ):
+                headers = _resolve_gateway_env()["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+            self.assertEqual(
+                f"Databricks-Ai-Gateway-Request-Tags: {tags}" in headers, tagged, headers
+            )
+
     def test_strips_trailing_slash(self):
         from omnigent.inner.claude_sdk_executor import _resolve_gateway_env
         from omnigent.inner.databricks_executor import DatabricksCredentials

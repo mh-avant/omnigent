@@ -153,6 +153,34 @@ def test_native_codex_resource_attributes_reach_server_and_terminal(
         }
 
 
+def test_native_codex_app_server_carries_its_own_session_request_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The app-server env holds this session's tags, never ones it inherited."""
+    monkeypatch.delenv("OMNIGENT_GATEWAY_REQUEST_TAGS", raising=False)
+    monkeypatch.setenv("OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE", '{"omnigent_session_id":"other"}')
+
+    def build(**session: Any) -> Any:
+        return build_codex_native_server(
+            socket_path=tmp_path / "codex.sock",
+            codex_home=tmp_path / "codex-home",
+            cwd=tmp_path,
+            model=None,
+            profile=None,
+            bridge_dir=tmp_path / "bridge",
+            codex_path=sys.executable,
+            **session,
+        )
+
+    tagged = build(session_id="conv_1", session_labels={"team": "ml", "omnigent.ui": "terminal"})
+
+    assert tagged.env["OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE"] == (
+        '{"omnigent_session_id":"conv_1","team":"ml"}'
+    )
+    assert "OMNIGENT_GATEWAY_REQUEST_TAGS_VALUE" not in build().env
+
+
 def test_build_codex_native_server_without_bypass_emits_no_bypass_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
