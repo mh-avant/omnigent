@@ -10,19 +10,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
 
+from omnigent.db.db_models import LABEL_KEY_MAX_LEN, LABEL_VALUE_MAX_LEN
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.models.model_override import validate_model_override
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.auth import LEVEL_READ, RESERVED_USER_LOCAL, local_single_user_enabled
 from omnigent.server.routes._auth_helpers import require_access
 from omnigent.stores import AgentStore, ConversationStore, PermissionStore
+from omnigent.stores.conversation_store import PROJECT_LABEL_KEY
 from omnigent.stores.host_store import host_is_live
 from omnigent.stores.project_store import ProjectStore
+from omnigent.util.cost_plan import COST_CONTROL_LABEL_NAMESPACE
 from omnigent.util.reasoning_effort import EFFORT_VALUES, validate_effort
 
 _logger = logging.getLogger(__name__)
@@ -34,6 +38,35 @@ class ProjectCreateResolution:
 
     body: Any
     project_id: str | None = None
+
+
+# Label namespaces written by Omnigent itself, never by a project default.
+_INTERNAL_LABEL_PREFIXES = ("omnigent.", COST_CONTROL_LABEL_NAMESPACE)
+
+
+def project_default_labels(config: Mapping[str, Any]) -> dict[str, str]:
+    """Return the user labels a project's opaque config stamps on new sessions.
+
+    The config is client-owned JSON, so a malformed ``labels`` value or entry
+    (non-string, over the column width, or an internal key) is ignored.
+
+    :param config: The stored project config, e.g.
+        ``{"labels": {"team": "ml"}}``.
+    :returns: The usable labels, e.g. ``{"team": "ml"}``.
+    """
+    raw_labels = config.get("labels")
+    if not isinstance(raw_labels, Mapping):
+        return {}
+    return {
+        key: value
+        for key, value in raw_labels.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and 0 < len(key) <= LABEL_KEY_MAX_LEN
+        and len(value) <= LABEL_VALUE_MAX_LEN
+        and key != PROJECT_LABEL_KEY
+        and not key.startswith(_INTERNAL_LABEL_PREFIXES)
+    }
 
 
 async def resolve_project_session_create(
@@ -68,6 +101,15 @@ async def resolve_project_session_create(
     for field in ("agent_id", "workspace", "git"):
         if field not in fields_set and field in config and field in body.__class__.model_fields:
             updates[field] = config[field]
+    # Project labels sit under the request's own labels, which win on conflict,
+    # unless the client says its labels are already the final set.
+    default_labels = project_default_labels(config)
+    if (
+        default_labels
+        and "labels" in body.__class__.model_fields
+        and getattr(body, "apply_project_labels", True)
+    ):
+        updates["labels"] = {**default_labels, **(getattr(body, "labels", None) or {})}
     resolved_data = body.model_dump()
     resolved_data.update(updates)
     # Re-validate project hints because config is intentionally stored as

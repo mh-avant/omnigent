@@ -10551,7 +10551,7 @@ def _reject_reserved_cost_control_label_seed(labels: dict[str, str]) -> None:
         )
 
 
-def _reject_server_reserved_label_seed(labels: dict[str, str] | None) -> None:
+def _reject_server_reserved_label_seed(labels: Mapping[str, str | None] | None) -> None:
     """
     Reject a client-supplied label map that touches server-internal keys.
 

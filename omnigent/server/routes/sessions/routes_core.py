@@ -2734,11 +2734,12 @@ def register_core_routes(
                     code=ErrorCode.INVALID_INPUT,
                 )
             requested_codex_approval_mode = body.approval_mode
-        labels_to_set = dict(body.labels or {})
+        labels_to_set: dict[str, str | None] = dict(body.labels or {})
         # Pins are per-user. The client writes the canonical ``omnigent.pinned``
         # key; rewrite it to the caller's per-user key so one user's pin doesn't
         # pin the session for everyone with access. Empty value (unpin) carries
-        # through to the delete-clear loop below under the per-user key.
+        # through to the delete-clear loop below under the per-user key, as does
+        # a null.
         if PINNED_LABEL_KEY in labels_to_set:
             labels_to_set[pinned_label_key(user_id)] = labels_to_set.pop(PINNED_LABEL_KEY)
         if requested_codex_collaboration_mode is not None:
@@ -3336,30 +3337,29 @@ def register_core_routes(
                 _approval_result,
             )
             labels_to_set[_CODEX_NATIVE_APPROVAL_MODE_LABEL_KEY] = requested_codex_approval_mode
-        # Some labels are cleared by DELETE, not by upserting an empty value:
-        # the project membership (empty = "remove from project") and the pinned
-        # flag (empty = "unpin"). Split any empty-valued clear keys out before
-        # the bulk upsert so other labels are unaffected. Labels are upsert-only,
-        # so without this an empty string would linger as a stored value.
-        # The pinned key was rewritten to the caller's per-user key above, so
-        # clear that one (not the canonical bare key) on an empty value.
+        # A null value deletes its label. The project membership and the
+        # caller's per-user pin key also treat an empty string as delete
+        # ("remove from project" / "unpin"), so it never lingers as a value.
+        # Reserved keys were rejected above whether set or deleted.
         for _clear_key in (PROJECT_LABEL_KEY, pinned_label_key(user_id)):
             if labels_to_set.get(_clear_key) == "":
-                labels_to_set = {k: v for k, v in labels_to_set.items() if k != _clear_key}
-                await asyncio.to_thread(conversation_store.delete_label, session_id, _clear_key)
-        if labels_to_set:
-            await asyncio.to_thread(conversation_store.set_labels, session_id, labels_to_set)
+                labels_to_set[_clear_key] = None
+        labels_to_upsert = {k: v for k, v in labels_to_set.items() if v is not None}
+        for _delete_key in (k for k, v in labels_to_set.items() if v is None):
+            await asyncio.to_thread(conversation_store.delete_label, session_id, _delete_key)
+        if labels_to_upsert:
+            await asyncio.to_thread(conversation_store.set_labels, session_id, labels_to_upsert)
         # Only when the switch was forwarded: a silent PATCH writes no label,
         # and an unconfirmed mode must not reach the picker.
-        if _CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY in labels_to_set:
+        if _CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY in labels_to_upsert:
             _publish_permission_mode(
                 session_id,
-                labels_to_set[_CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY],
+                labels_to_upsert[_CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY],
             )
-        if _CODEX_NATIVE_APPROVAL_MODE_LABEL_KEY in labels_to_set:
+        if _CODEX_NATIVE_APPROVAL_MODE_LABEL_KEY in labels_to_upsert:
             _publish_codex_approval_mode(
                 session_id,
-                labels_to_set[_CODEX_NATIVE_APPROVAL_MODE_LABEL_KEY],
+                labels_to_upsert[_CODEX_NATIVE_APPROVAL_MODE_LABEL_KEY],
             )
         # Archiving means "get this out of my way", which contradicts a pin
         # ("keep it at the top"), so drop the archiver's own pin — otherwise the

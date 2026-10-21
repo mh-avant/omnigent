@@ -1660,6 +1660,9 @@ class _SessionCreateRequestBase(BaseModel):
         real message after the create returns. ``None`` everywhere else,
         including the bundle-agent auto path, which routes on the first
         message event instead.
+    :param apply_project_labels: Whether a ``project_id`` create adds the
+        project's default labels under ``labels``. ``False`` when ``labels``
+        is already the final set, e.g. a default removed for this session.
     """
 
     inference_configuration_revision: str | None = None
@@ -1673,6 +1676,7 @@ class _SessionCreateRequestBase(BaseModel):
     mcp_registry_services: list[McpRegistryServiceId] = Field(default_factory=list, max_length=40)
     title: str | None = Field(default=None, max_length=USER_SESSION_TITLE_MAX_CHARS)
     labels: dict[str, str] = Field(default_factory=dict)
+    apply_project_labels: bool = True
     parent_session_id: str | None = None
     sub_agent_name: str | None = None
     host_type: Literal["external", "managed"] = "external"
@@ -1907,6 +1911,8 @@ class SessionCreateMetadata(BaseModel):
         provision on ``host_type: "managed"`` (one of the server's
         ``sandbox_providers``); ``None`` takes the server's first. Only
         valid with ``host_type: "managed"``.
+    :param apply_project_labels: Same as on the JSON create: ``False`` skips
+        the project's default labels because ``labels`` is the final set.
     """
 
     inference_configuration_revision: str | None = None
@@ -1916,6 +1922,7 @@ class SessionCreateMetadata(BaseModel):
     title: str | None = Field(default=None, max_length=USER_SESSION_TITLE_MAX_CHARS)
     project_id: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
+    apply_project_labels: bool = True
     reasoning_effort: str | None = None
     host_id: str | None = None
     workspace: str | None = None
@@ -2477,7 +2484,9 @@ class UpdateSessionRequest(BaseModel):
     :param title: New title, e.g. ``"debugging auth flow"``.
         ``None`` leaves unchanged.
     :param labels: Guardrails labels to upsert. Merges with existing
-        labels; keys not present are left untouched.
+        labels; keys not present are left untouched. A ``null`` value
+        deletes that label. Server-internal keys stay rejected whether
+        set or deleted.
     :param reasoning_effort: Per-session reasoning-effort hint.
         Accepted metadata values are ``"none"``, ``"minimal"``,
         ``"low"``, ``"medium"``, ``"high"``, ``"xhigh"``, and
@@ -2579,7 +2588,7 @@ class UpdateSessionRequest(BaseModel):
 
     runner_id: str | None = None
     title: str | None = Field(default=None, max_length=USER_SESSION_TITLE_MAX_CHARS)
-    labels: dict[str, str] | None = None
+    labels: dict[str, str | None] | None = None
     reasoning_effort: str | None = None
     model_override: str | None = None
     collaboration_mode: str | None = None

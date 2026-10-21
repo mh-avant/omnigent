@@ -12,12 +12,14 @@
 // harness stay per-agent run config, out of scope here. The host and agent
 // pickers reuse the composer's components; the working directory reuses its
 // filesystem browser (inline, so it scrolls inside the modal).
+// Default labels are stamped on new sessions server-side at creation.
 // Fields are optional: an unset one stores no default (an absent key), and an
 // all-default dialog stores an empty config.
 
 import { ChevronDownIcon } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { LabelEditor, type LabelEditorHandle } from "@/components/LabelEditor";
 import {
   Dialog,
   DialogContent,
@@ -51,6 +53,7 @@ import {
 } from "@/lib/nativeCodingAgents";
 import type { ProjectConfig } from "@/lib/projectsApi";
 import { shouldGuardDialogDismiss } from "@/lib/dialogDismissGuard";
+import { labelRecordFromUnknown, labelsEqual } from "@/lib/sessionLabels";
 import { AgentHarnessPicker } from "./NewChatDialog";
 import { WorkspacePickerDialog } from "./WorkspacePickerDialog";
 
@@ -144,6 +147,20 @@ export function ProjectSettingsDialog({
   const [model, setModel] = useState<string>(NONE);
   // Default account (provider name); NONE runs on the host's default.
   const [provider, setProvider] = useState<string>(NONE);
+  // Labels stamped on sessions created in the project; empty stores no key.
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  const labelEditorRef = useRef<LabelEditorHandle>(null);
+  // "Add" in the editor only changes the draft, so closing with unsaved label
+  // changes is caught once and warned about; Cancel or a second close discards.
+  const labelsDirty = !labelsEqual(labels, labelRecordFromUnknown(stored?.labels));
+  const [discardWarned, setDiscardWarned] = useState(false);
+  const onDialogOpenChange = (next: boolean) => {
+    if (!next && labelsDirty && !discardWarned) {
+      setDiscardWarned(true);
+      return;
+    }
+    onOpenChange(next);
+  };
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
 
   // The agent picker and the host Select portal their dropdowns OUTSIDE
@@ -195,6 +212,8 @@ export function ProjectSettingsDialog({
     setAgentId(c.agent_id ?? null);
     setModel(c.model ?? NONE);
     setProvider(c.provider ?? NONE);
+    setLabels(labelRecordFromUnknown(c.labels));
+    setDiscardWarned(false);
     setWorkspaceOpen(false);
   }, [open, stored, loadFailed]);
 
@@ -203,6 +222,15 @@ export function ProjectSettingsDialog({
     // Guard against submitting a blank draft seeded from a failed load, which
     // the server would read as "clear the stored defaults".
     if (loadFailed) return;
+    // A label typed into the add row but not yet added is saved too; an
+    // invalid one blocks Save and shows its inline message.
+    const pendingLabel = labelEditorRef.current?.takePendingLabel() ?? { status: "none" };
+    if (pendingLabel.status === "invalid") return;
+    const labelsToSave =
+      pendingLabel.status === "valid"
+        ? { ...labels, [pendingLabel.key]: pendingLabel.value }
+        : labels;
+    if (labelsToSave !== labels) setLabels(labelsToSave);
     // Preserve config keys owned by other dialogs, then replace only the fields
     // this form edits.
     const config: ProjectConfig = { ...(stored ?? {}) };
@@ -240,6 +268,8 @@ export function ProjectSettingsDialog({
     // A sandbox brings its own credentials, so a host account can't apply.
     if (provider !== NONE && hostId !== SANDBOX_HOST_CHOICE) config.provider = provider;
     else delete config.provider;
+    if (Object.keys(labelsToSave).length > 0) config.labels = labelsToSave;
+    else delete config.labels;
 
     updateConfig.mutate(
       { id: projectId, name: projectName, config },
@@ -333,10 +363,12 @@ export function ProjectSettingsDialog({
   const warningHost = onlineHosts.find((h) => h.host_id === browsableHostId) ?? null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onDialogOpenChange}>
       <DialogContent
         onClick={(e) => e.stopPropagation()}
-        className="sm:max-w-lg"
+        // Capped to the viewport: the body scrolls while the header and the
+        // Save/Cancel footer stay visible on short windows.
+        className="sm:max-w-lg max-h-[85dvh] grid-rows-[auto_1fr_auto]"
         // Keep a nested dropdown's dismiss (pick an option, or click the modal
         // body while it's open) from closing the whole Dialog. See
         // `guardDialogDismiss`; real backdrop clicks and Escape still close.
@@ -350,259 +382,300 @@ export function ProjectSettingsDialog({
             a starting point you can change per session; leave a field blank for no default.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={onSubmit} className="flex flex-col gap-4">
-          <Field label="Host" hint="Where new sessions run by default">
-            <Select
-              value={hostId}
-              onValueChange={setHostId}
-              onOpenChange={onDropdownOpenChange}
-              disabled={isLoading}
-            >
-              <SelectTrigger className="w-full" data-testid="project-settings-host">
-                <SelectValue placeholder="No default" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE}>No default</SelectItem>
-                {managedSandboxesEnabled && (
-                  <SelectItem value={SANDBOX_HOST_CHOICE}>
-                    {sandboxOptionLabel(sandboxProvider)}
-                  </SelectItem>
-                )}
-                {onlineHosts.map((h) => (
-                  <SelectItem key={h.host_id} value={h.host_id}>
-                    {h.name}
-                  </SelectItem>
-                ))}
-                {storedHostMissing && (
-                  <SelectItem value={hostId}>
-                    {stored?.host_id === hostId ? `${hostId} (unavailable)` : hostId}
-                  </SelectItem>
-                )}
-              </SelectContent>
-            </Select>
-          </Field>
-
-          <Field
-            label="Working directory"
-            hint={
-              hostId === NONE
-                ? "Pick a host first"
-                : browsableHostId
-                  ? "Browse the host or type a path"
-                  : "Absolute path on the host"
-            }
-            htmlFor="project-settings-workspace"
+        <form onSubmit={onSubmit} className="contents">
+          <div
+            className="-mx-1 flex min-h-0 flex-col gap-4 overflow-y-auto px-1"
+            data-testid="project-settings-body"
           >
-            {hostId === NONE ? (
-              // Mirror the new-session composer: the working directory can only
-              // be chosen once a host is selected (the file browser lists
-              // against a concrete host, and a path is host-relative anyway).
-              <p
-                className="rounded-md border border-dashed px-3 py-2 text-muted-foreground text-ui"
-                data-testid="project-settings-workspace"
-              >
-                Pick a host first
-              </p>
-            ) : browsableHostId ? (
-              // Browsing uses the shared full-screen picker; navigation is
-              // provisional until the user confirms a folder.
-              <div
-                className="relative flex flex-col gap-1.5"
-                data-testid="project-settings-workspace"
-              >
-                <button
-                  type="button"
-                  onClick={() => setWorkspaceOpen(true)}
-                  aria-expanded={workspaceOpen}
-                  disabled={isLoading}
-                  className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-input bg-transparent px-3 text-ui outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <span className={workspace ? "truncate" : "truncate text-muted-foreground"}>
-                    {workspace || "Browse…"}
-                  </span>
-                  <ChevronDownIcon
-                    className={`size-4 shrink-0 opacity-50 transition-transform ${
-                      workspaceOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
-                <WorkspacePickerDialog
-                  open={workspaceOpen}
-                  onOpenChange={setWorkspaceOpen}
-                  hostId={browsableHostId}
-                  initialPath={workspace}
-                  onConfirm={setWorkspace}
-                />
-              </div>
-            ) : (
-              // A host is picked but not browsable (sandbox / offline stored
-              // host) — fall back to typing an absolute path.
-              <input
-                id="project-settings-workspace"
-                data-testid="project-settings-workspace"
-                className="w-full rounded-md border bg-transparent px-3 py-2 text-ui outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                placeholder="/path/to/repo"
-                value={workspace}
-                onChange={(e) => setWorkspace(e.target.value)}
-                disabled={isLoading}
-              />
-            )}
-          </Field>
-
-          <Field
-            label="Random worktree"
-            hint="Start each new session in a fresh randomly-named git worktree (vs. directly in the workspace). Overrides the global default in Settings › Git."
-          >
-            <div className="flex sm:justify-end">
-              <Switch
-                data-testid="project-settings-worktree"
-                checked={useWorktree}
-                onCheckedChange={setUseWorktree}
-                disabled={isLoading}
-              />
-            </div>
-          </Field>
-
-          {useWorktree && (
-            <Field
-              label="Base branch"
-              hint="Branch new worktrees fork from; blank uses the current branch"
-              htmlFor="project-settings-base-branch"
-            >
-              <input
-                id="project-settings-base-branch"
-                data-testid="project-settings-base-branch"
-                className="w-full rounded-md border bg-transparent px-3 py-2 text-ui outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                placeholder="e.g. main"
-                value={baseBranch}
-                onChange={(e) => setBaseBranch(e.target.value)}
-                disabled={isLoading}
-              />
-            </Field>
-          )}
-
-          <Field label="Agent" hint="Default agent / harness for new sessions">
-            <div className="flex flex-col items-end gap-1" data-testid="project-settings-agent">
-              <AgentHarnessPicker
-                agentEntries={agentEntries}
-                harnessEntries={harnessEntries}
-                effectiveAgentId={agentId}
-                agentLabel={agentLabel}
-                hasAgents={agentList.length > 0}
-                host={warningHost}
-                onSelectAgent={(a) => {
-                  // A model default belongs to the picked harness's vocab —
-                  // don't carry an alias onto a different agent.
-                  if (a.id !== agentId) setModel(NONE);
-                  setAgentId(a.id);
-                }}
-                pendingAgent={null}
-                pendingAgentId="__unused_pending_agent__"
-                onSelectPending={() => {}}
-                // No interactive create flow here, so hide the "Create custom
-                // agent" action and leave the handler inert.
-                onCreateCustomAgent={() => {}}
-                allowCreateCustomAgent={false}
-                sandboxSelected={hostId === SANDBOX_HOST_CHOICE}
-                // Modal so the menu establishes its own scroll context and can
-                // scroll inside the Dialog's scroll-lock (a non-modal dropdown
-                // portals outside that lock and can't scroll). The dismiss
-                // guard on DialogContent keeps this modal dropdown's own close
-                // from bubbling up and closing the settings dialog.
-                dropdownModal
-                onOpenChange={onDropdownOpenChange}
-                // Bound the menu height so it scrolls inside the modal instead
-                // of running off the bottom; fixed width matches the composer.
-                contentClassName="max-h-80 w-80"
-                contentAlign="end"
-                // Fill the field column and match the sibling <Select> triggers
-                // (full width, bordered, h-8) so the control right-aligns with
-                // the host / effort dropdowns instead of floating mid-row.
-                triggerClassName="h-8 w-full justify-between rounded-md border border-input bg-transparent px-3 text-foreground hover:bg-transparent hover:text-foreground"
-                triggerLabelClassName="max-w-none text-ui"
-              />
-              {agentId && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-auto p-0 text-muted-foreground text-sm hover:bg-transparent"
-                  onClick={() => {
-                    setAgentId(null);
-                    setModel(NONE);
-                  }}
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-          </Field>
-
-          {supportsModelDefault && (
-            <Field
-              label="Model"
-              hint={
-                modelPickerEmpty
-                  ? "No model catalog available — pick a Host default (or connect a host) to choose from its models"
-                  : "Default model for new sessions with this agent"
-              }
-            >
+            <Field label="Host" hint="Where new sessions run by default">
               <Select
-                value={model}
-                onValueChange={setModel}
+                value={hostId}
+                onValueChange={setHostId}
                 onOpenChange={onDropdownOpenChange}
-                disabled={isLoading || modelPickerEmpty}
+                disabled={isLoading}
               >
-                <SelectTrigger className="w-full" data-testid="project-settings-model">
+                <SelectTrigger className="w-full" data-testid="project-settings-host">
                   <SelectValue placeholder="No default" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>No default</SelectItem>
-                  {modelOptions.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.label}
+                  {managedSandboxesEnabled && (
+                    <SelectItem value={SANDBOX_HOST_CHOICE}>
+                      {sandboxOptionLabel(sandboxProvider)}
+                    </SelectItem>
+                  )}
+                  {onlineHosts.map((h) => (
+                    <SelectItem key={h.host_id} value={h.host_id}>
+                      {h.name}
                     </SelectItem>
                   ))}
-                  {storedModelMissing && <SelectItem value={model}>{model}</SelectItem>}
+                  {storedHostMissing && (
+                    <SelectItem value={hostId}>
+                      {stored?.host_id === hostId ? `${hostId} (unavailable)` : hostId}
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </Field>
-          )}
 
-          <Field label="Account" hint={accountHint}>
-            <Select
-              value={hostId === SANDBOX_HOST_CHOICE ? NONE : provider}
-              onValueChange={(v) => setProvider(v || NONE)}
-              onOpenChange={onDropdownOpenChange}
-              disabled={
-                isLoading ||
-                hostId === SANDBOX_HOST_CHOICE ||
-                (accountOptions.length === 0 && provider === NONE)
+            <Field
+              label="Working directory"
+              hint={
+                hostId === NONE
+                  ? "Pick a host first"
+                  : browsableHostId
+                    ? "Browse the host or type a path"
+                    : "Absolute path on the host"
               }
+              htmlFor="project-settings-workspace"
             >
-              <SelectTrigger className="w-full" data-testid="project-settings-account">
-                <SelectValue placeholder="No default" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE}>No default</SelectItem>
-                {accountOptions.map((p) => (
-                  <SelectItem
-                    key={p.name}
-                    value={p.name}
-                    disabled={!p.ready}
-                    data-testid={`project-settings-account-${p.name}`}
+              {hostId === NONE ? (
+                // Mirror the new-session composer: the working directory can only
+                // be chosen once a host is selected (the file browser lists
+                // against a concrete host, and a path is host-relative anyway).
+                <p
+                  className="rounded-md border border-dashed px-3 py-2 text-muted-foreground text-ui"
+                  data-testid="project-settings-workspace"
+                >
+                  Pick a host first
+                </p>
+              ) : browsableHostId ? (
+                // Browsing uses the shared full-screen picker; navigation is
+                // provisional until the user confirms a folder.
+                <div
+                  className="relative flex flex-col gap-1.5"
+                  data-testid="project-settings-workspace"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setWorkspaceOpen(true)}
+                    aria-expanded={workspaceOpen}
+                    disabled={isLoading}
+                    className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-input bg-transparent px-3 text-ui outline-none disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {p.name}
-                    {p.default ? " (host default)" : ""}
-                    {p.ready ? "" : " · not signed in"}
-                  </SelectItem>
-                ))}
-                {unlistedProviders.map((name) => (
-                  <SelectItem key={name} value={name}>{`${name} (not listed here)`}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+                    <span className={workspace ? "truncate" : "truncate text-muted-foreground"}>
+                      {workspace || "Browse…"}
+                    </span>
+                    <ChevronDownIcon
+                      className={`size-4 shrink-0 opacity-50 transition-transform ${
+                        workspaceOpen ? "rotate-180" : ""
+                      }`}
+                    />
+                  </button>
+                  <WorkspacePickerDialog
+                    open={workspaceOpen}
+                    onOpenChange={setWorkspaceOpen}
+                    hostId={browsableHostId}
+                    initialPath={workspace}
+                    onConfirm={setWorkspace}
+                  />
+                </div>
+              ) : (
+                // A host is picked but not browsable (sandbox / offline stored
+                // host) — fall back to typing an absolute path.
+                <input
+                  id="project-settings-workspace"
+                  data-testid="project-settings-workspace"
+                  className="w-full rounded-md border bg-transparent px-3 py-2 text-ui outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="/path/to/repo"
+                  value={workspace}
+                  onChange={(e) => setWorkspace(e.target.value)}
+                  disabled={isLoading}
+                />
+              )}
+            </Field>
+
+            <Field
+              label="Random worktree"
+              hint="Start each new session in a fresh randomly-named git worktree (vs. directly in the workspace). Overrides the global default in Settings › Git."
+            >
+              <div className="flex sm:justify-end">
+                <Switch
+                  data-testid="project-settings-worktree"
+                  checked={useWorktree}
+                  onCheckedChange={setUseWorktree}
+                  disabled={isLoading}
+                />
+              </div>
+            </Field>
+
+            {useWorktree && (
+              <Field
+                label="Base branch"
+                hint="Branch new worktrees fork from; blank uses the current branch"
+                htmlFor="project-settings-base-branch"
+              >
+                <input
+                  id="project-settings-base-branch"
+                  data-testid="project-settings-base-branch"
+                  className="w-full rounded-md border bg-transparent px-3 py-2 text-ui outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="e.g. main"
+                  value={baseBranch}
+                  onChange={(e) => setBaseBranch(e.target.value)}
+                  disabled={isLoading}
+                />
+              </Field>
+            )}
+
+            <Field label="Agent" hint="Default agent / harness for new sessions">
+              <div className="flex flex-col items-end gap-1" data-testid="project-settings-agent">
+                <AgentHarnessPicker
+                  agentEntries={agentEntries}
+                  harnessEntries={harnessEntries}
+                  effectiveAgentId={agentId}
+                  agentLabel={agentLabel}
+                  hasAgents={agentList.length > 0}
+                  host={warningHost}
+                  onSelectAgent={(a) => {
+                    // A model default belongs to the picked harness's vocab —
+                    // don't carry an alias onto a different agent.
+                    if (a.id !== agentId) setModel(NONE);
+                    setAgentId(a.id);
+                  }}
+                  pendingAgent={null}
+                  pendingAgentId="__unused_pending_agent__"
+                  onSelectPending={() => {}}
+                  // No interactive create flow here, so hide the "Create custom
+                  // agent" action and leave the handler inert.
+                  onCreateCustomAgent={() => {}}
+                  allowCreateCustomAgent={false}
+                  sandboxSelected={hostId === SANDBOX_HOST_CHOICE}
+                  // Modal so the menu establishes its own scroll context and can
+                  // scroll inside the Dialog's scroll-lock (a non-modal dropdown
+                  // portals outside that lock and can't scroll). The dismiss
+                  // guard on DialogContent keeps this modal dropdown's own close
+                  // from bubbling up and closing the settings dialog.
+                  dropdownModal
+                  onOpenChange={onDropdownOpenChange}
+                  // Bound the menu height so it scrolls inside the modal instead
+                  // of running off the bottom; fixed width matches the composer.
+                  contentClassName="max-h-80 w-80"
+                  contentAlign="end"
+                  // Fill the field column and match the sibling <Select> triggers
+                  // (full width, bordered, h-8) so the control right-aligns with
+                  // the host / effort dropdowns instead of floating mid-row.
+                  triggerClassName="h-8 w-full justify-between rounded-md border border-input bg-transparent px-3 text-foreground hover:bg-transparent hover:text-foreground"
+                  triggerLabelClassName="max-w-none text-ui"
+                />
+                {agentId && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-auto p-0 text-muted-foreground text-sm hover:bg-transparent"
+                    onClick={() => {
+                      setAgentId(null);
+                      setModel(NONE);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </Field>
+
+            {supportsModelDefault && (
+              <Field
+                label="Model"
+                hint={
+                  modelPickerEmpty
+                    ? "No model catalog available — pick a Host default (or connect a host) to choose from its models"
+                    : "Default model for new sessions with this agent"
+                }
+              >
+                <Select
+                  value={model}
+                  onValueChange={setModel}
+                  onOpenChange={onDropdownOpenChange}
+                  disabled={isLoading || modelPickerEmpty}
+                >
+                  <SelectTrigger className="w-full" data-testid="project-settings-model">
+                    <SelectValue placeholder="No default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE}>No default</SelectItem>
+                    {modelOptions.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.label}
+                      </SelectItem>
+                    ))}
+                    {storedModelMissing && <SelectItem value={model}>{model}</SelectItem>}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
+
+            <Field label="Account" hint={accountHint}>
+              <Select
+                value={hostId === SANDBOX_HOST_CHOICE ? NONE : provider}
+                onValueChange={(v) => setProvider(v || NONE)}
+                onOpenChange={onDropdownOpenChange}
+                disabled={
+                  isLoading ||
+                  hostId === SANDBOX_HOST_CHOICE ||
+                  (accountOptions.length === 0 && provider === NONE)
+                }
+              >
+                <SelectTrigger className="w-full" data-testid="project-settings-account">
+                  <SelectValue placeholder="No default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>No default</SelectItem>
+                  {accountOptions.map((p) => (
+                    <SelectItem
+                      key={p.name}
+                      value={p.name}
+                      disabled={!p.ready}
+                      data-testid={`project-settings-account-${p.name}`}
+                    >
+                      {p.name}
+                      {p.default ? " (host default)" : ""}
+                      {p.ready ? "" : " · not signed in"}
+                    </SelectItem>
+                  ))}
+                  {unlistedProviders.map((name) => (
+                    <SelectItem key={name} value={name}>{`${name} (not listed here)`}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+
+            <div className="flex flex-col gap-1.5" data-testid="project-settings-labels">
+              <div className="flex flex-col">
+                <span className="font-medium text-ui">Default labels</span>
+                <span className="text-muted-foreground text-sm">
+                  Added to sessions created in this project; a label set at creation wins. Moving an
+                  existing session here doesn't add them.
+                </span>
+              </div>
+              <LabelEditor
+                labels={labels}
+                disabled={isLoading || loadFailed}
+                onSet={(key, value) => setLabels((prev) => ({ ...prev, [key]: value }))}
+                onRemove={(key) =>
+                  setLabels((prev) =>
+                    Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key)),
+                  )
+                }
+                emptyText="No default labels"
+                testIdPrefix="project-settings-labels-editor"
+                handleRef={labelEditorRef}
+              />
+              {labelsDirty && (
+                <p
+                  className={
+                    discardWarned ? "text-destructive text-sm" : "text-muted-foreground text-sm"
+                  }
+                  role={discardWarned ? "alert" : undefined}
+                  data-testid="project-settings-labels-unsaved"
+                >
+                  {discardWarned
+                    ? "Your label changes aren't saved. Save to keep them, or close again to discard them."
+                    : "Unsaved. Save to apply these labels to new sessions."}
+                </p>
+              )}
+            </div>
+          </div>
 
           {loadFailed && (
             <p

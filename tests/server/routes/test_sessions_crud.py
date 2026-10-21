@@ -570,19 +570,22 @@ async def test_patch_session_sets_project_label(
     assert conv.labels.get("omni_project") == "Sprint 42"
 
 
+@pytest.mark.parametrize("clear_value", ["", None])
 async def test_patch_session_empty_project_removes_label(
     client: httpx.AsyncClient,
     session_id: str,
     db_uri: str,
+    clear_value: str | None,
 ) -> None:
-    """PATCH with ``labels: {project: ""}`` removes the project label rather
-    than persisting an empty value — so the session returns to Unfiled."""
+    """PATCH with ``labels: {project: ""}`` (or ``null``) removes the project
+    label rather than persisting an empty value — so the session returns to
+    Unfiled."""
     conv_store = SqlAlchemyConversationStore(db_uri)
     conv_store.set_labels(session_id, {"omni_project": "Sprint 42"})
 
     resp = await client.patch(
         f"/v1/sessions/{session_id}",
-        json={"labels": {"omni_project": ""}},
+        json={"labels": {"omni_project": clear_value}},
         headers={"Content-Type": "application/json"},
     )
     assert resp.status_code == 200
@@ -590,6 +593,67 @@ async def test_patch_session_empty_project_removes_label(
     conv = conv_store.get_conversation(session_id)
     assert conv is not None
     assert "omni_project" not in conv.labels
+
+
+# ── PATCH /v1/sessions/{id} user label deletion ──────────────────────
+
+
+async def test_patch_session_null_label_deletes_it(
+    client: httpx.AsyncClient,
+    session_id: str,
+    db_uri: str,
+) -> None:
+    """A ``null`` label value deletes that label while the rest of the same
+    PATCH still upserts, and untouched labels are kept."""
+    conv_store = SqlAlchemyConversationStore(db_uri)
+    conv_store.set_labels(session_id, {"team": "ml", "env": "dev", "owner": "ana"})
+
+    resp = await client.patch(
+        f"/v1/sessions/{session_id}",
+        json={"labels": {"team": None, "env": "prod", "never-set": None}},
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "team" not in resp.json()["labels"]
+
+    conv = conv_store.get_conversation(session_id)
+    assert conv is not None
+    assert "team" not in conv.labels
+    assert "never-set" not in conv.labels
+    assert conv.labels["env"] == "prod"
+    assert conv.labels["owner"] == "ana"
+
+
+@pytest.mark.parametrize(
+    "reserved_key",
+    [
+        "omnigent.archived_at",
+        "omnigent.sandbox.repo",
+        "omnigent.pinned.bob@example.com",
+        "omnigent.turn_actor",
+        "omnigent.mcp_service.github",
+    ],
+)
+async def test_patch_rejects_deleting_server_reserved_label(
+    client: httpx.AsyncClient,
+    session_id: str,
+    db_uri: str,
+    reserved_key: str,
+) -> None:
+    """Deleting a server-internal label is rejected exactly like setting it,
+    and the stored value survives."""
+    conv_store = SqlAlchemyConversationStore(db_uri)
+    conv_store.set_labels(session_id, {reserved_key: "server-written"})
+
+    resp = await client.patch(
+        f"/v1/sessions/{session_id}",
+        json={"labels": {reserved_key: None}},
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400, resp.text
+    conv = conv_store.get_conversation(session_id)
+    assert conv is not None
+    assert conv.labels[reserved_key] == "server-written"
 
 
 # ── Pinned session label (omnigent.pinned) ───────────────────────────

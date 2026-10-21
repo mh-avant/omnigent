@@ -36,7 +36,7 @@ import type * as ToastModule from "@/components/ui/toast";
 import type * as SessionsApiModule from "@/lib/sessionsApi";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { authenticatedFetch } from "@/lib/identity";
@@ -520,6 +520,47 @@ describe("NewChatLandingScreen project-aware create (first-class project_id)", (
     expect("host_id" in body).toBe(false);
     // The untouched config agent is still omitted for default-fill.
     expect("agent_id" in body).toBe(false);
+  });
+
+  it("pre-fills the project's default labels and leaves the server merge on", async () => {
+    setProjectConfig({ host_id: "host_1", workspace: REPO, labels: { team: "ml" } });
+    renderLanding();
+    await waitFor(() =>
+      expect(screen.getByTestId("new-session-label-chips")).toHaveTextContent("team: ml"),
+    );
+
+    const body = await submitAndReadBody();
+    expect(body.project_id).toBe("proj_alpha");
+    expect((body.labels as Record<string, string>).team).toBe("ml");
+    expect("apply_project_labels" in body).toBe(false);
+  });
+
+  it("sends the final labels without a removed project default", async () => {
+    setProjectConfig({ host_id: "host_1", workspace: REPO, labels: { team: "ml", env: "dev" } });
+    renderLanding();
+    await waitFor(() => expect(screen.getByTestId("new-session-label-chips")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Edit labels (env: dev)" }));
+    const dialog = await screen.findByTestId("new-session-labels-dialog");
+    expect(dialog).toHaveTextContent("from project");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove label team" }));
+    await waitFor(() => expect(dialog).not.toHaveTextContent("team:"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add label" }));
+    fireEvent.change(within(dialog).getByLabelText("New label key"), {
+      target: { value: "owner" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("New label value"), {
+      target: { value: "me" },
+    });
+    // Done keeps a valid label still in the add row.
+    fireEvent.click(within(dialog).getByTestId("new-session-labels-done"));
+    await waitFor(() => expect(screen.queryByTestId("new-session-labels-dialog")).toBeNull());
+
+    const body = await submitAndReadBody();
+    const labels = body.labels as Record<string, string>;
+    expect(labels.env).toBe("dev");
+    expect(labels.owner).toBe("me");
+    expect(labels.team).toBeUndefined();
+    expect(body.apply_project_labels).toBe(false);
   });
 
   it("carries project_id and the omission rules through the multipart (bundled) path", async () => {
