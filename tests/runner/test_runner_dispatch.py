@@ -4868,7 +4868,14 @@ async def test_sys_list_models_dispatches_locally_with_static_provider(
         conversation_id="conv_list_models",
     )
     payload = json.loads(output)
-    assert set(payload) == {"worker", "self"}
+    assert set(payload) == {"worker", "self", "host_providers"}
+    # The accounts sys_session_create can start a child on.
+    [account] = payload["host_providers"]
+    assert (account["name"], account["clis"], account["default_for"]) == (
+        "claude",
+        ["claude"],
+        ["claude"],
+    )
     worker = payload["worker"]
     assert worker["source"] == "static"
     assert worker["verified"] is False
@@ -8292,6 +8299,9 @@ async def test_sys_session_create_spawns_child_under_caller() -> None:
     assert captured["agent_id"] == "ag_x"
     assert captured["title"] == "auth"
     assert captured["initial_items"][0]["data"]["content"][0]["text"] == "start"
+    # Without 'provider' the child stays on the caller's runner and accounts.
+    assert "provider_override" not in captured
+    assert "host_id" not in captured
     handle = json.loads(output)
     assert handle["conversation_id"] == "conv_child"
     assert handle["agent_id"] == "ag_x"
@@ -8516,6 +8526,201 @@ async def test_sys_session_create_config_not_found(tmp_path: Path) -> None:
     info = json.loads(output)
     assert info["error"] == "config_not_found"
     assert info["config_path"] == "nope.yaml"
+
+
+def _child_account_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Configure this host with two Claude accounts, a Codex one and Databricks.
+
+    ``max1`` (the default Claude login) and ``max2`` (its own login directory)
+    are signed in; ``max1`` and ``codex_b`` are the defaults the runner uses.
+    """
+    import yaml
+
+    from omnigent.onboarding.provider_config import SESSION_PROVIDER_ENV
+
+    config_home = isolate_provider_resolution(monkeypatch, tmp_path / "config")
+    for var in (SESSION_PROVIDER_ENV, "CLAUDE_CONFIG_DIR", "CODEX_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    providers: dict[str, object] = {
+        "max1": {"kind": "subscription", "cli": "claude", "default": True},
+        "max2": {"kind": "subscription", "cli": "claude", "config_dir": str(tmp_path / "m2")},
+        "codex_b": {"kind": "subscription", "cli": "codex", "default": True},
+        "dbx": {"kind": "databricks", "profile": "alt"},
+    }
+    (config_home / "config.yaml").write_text(yaml.safe_dump({"providers": providers}))
+    for login_dir in (tmp_path / "home" / ".claude", tmp_path / "m2"):
+        login_dir.mkdir(parents=True)
+        (login_dir / ".credentials.json").write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "a", "refreshToken": "r"}})
+        )
+
+
+async def _create_child_on_provider(
+    arguments: dict[str, Any], *, child_harness: str = "claude-native", parent_host: bool = True
+) -> tuple[dict[str, Any], list[tuple[str, str, dict[str, Any] | None]]]:
+    """Run ``sys_session_create`` against a fake server; return (result, requests)."""
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    requests: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_caller":
+            host = {"host_id": "host_1", "workspace": "/repo"} if parent_host else {}
+            return httpx.Response(200, json={"id": "conv_caller", **host})
+        if request.method == "POST" and request.url.path == "/v1/sessions":
+            return httpx.Response(
+                201,
+                json={
+                    "id": "conv_child",
+                    "agent_id": "ag_x",
+                    "agent_name": "claude-native-ui",
+                    "harness": child_harness,
+                    "status": "idle",
+                },
+            )
+        if request.url.path.startswith("/v1/sessions/conv_child"):
+            return httpx.Response(204 if request.method == "DELETE" else 200, json={})
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create",
+            arguments=json.dumps(arguments),
+            server_client=server_client,
+            conversation_id="conv_caller",
+        )
+    return json.loads(output), requests
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_on_another_account_gets_its_own_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    A provider other than the runner's account creates the child on the
+    parent's host and workspace with ``provider_override`` (so the host launches
+    it a runner on that account), and only then posts the first message.
+    """
+    _child_account_host(monkeypatch, tmp_path)
+
+    result, requests = await _create_child_on_provider(
+        {"agent_id": "ag_x", "provider": "max2", "message": "start"}
+    )
+
+    creates = [body for method, path, body in requests if path == "/v1/sessions"]
+    assert creates == [
+        {
+            "agent_id": "ag_x",
+            "parent_session_id": "conv_caller",
+            "host_id": "host_1",
+            "workspace": "/repo",
+            "provider_override": "max2",
+        }
+    ]
+    assert requests[-1][:2] == ("POST", "/v1/sessions/conv_child/events")
+    assert result["conversation_id"] == "conv_child"
+    assert result["provider"] == "max2"
+    assert "does not wake you" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_on_the_runners_account_stays_colocated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The account this runner already uses for the family keeps the child on it."""
+    _child_account_host(monkeypatch, tmp_path)
+
+    result, requests = await _create_child_on_provider(
+        {"agent_id": "ag_x", "provider": "max1", "message": "start"}
+    )
+
+    creates = [body for method, path, body in requests if path == "/v1/sessions"]
+    assert creates == [{"agent_id": "ag_x", "parent_session_id": "conv_caller"}]
+    assert requests[-1][:2] == ("POST", "/v1/sessions/conv_child/events")
+    assert result["provider"] == "max1"
+    assert "note" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments,parent_host,error,message",
+    [
+        ({"provider": "nope"}, True, "provider_not_found", "configured: codex_b, dbx, max1, max2"),
+        ({"provider": "max2"}, False, "provider_unavailable", "connected host"),
+    ],
+)
+async def test_sys_session_create_rejects_a_provider_before_creating(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    arguments: dict[str, Any],
+    parent_host: bool,
+    error: str,
+    message: str,
+) -> None:
+    """An unknown provider, or a parent on no host, fails before any child exists."""
+    _child_account_host(monkeypatch, tmp_path)
+
+    result, requests = await _create_child_on_provider(
+        {"agent_id": "ag_x", **arguments}, parent_host=parent_host
+    )
+
+    assert result["error"] == error
+    assert message in result["message"]
+    assert not [path for _, path, _ in requests if path == "/v1/sessions"]
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_reports_a_provider_not_signed_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A subscription without a login fails with the command that signs it in."""
+    _child_account_host(monkeypatch, tmp_path)
+    (tmp_path / "m2" / ".credentials.json").unlink()
+
+    result, requests = await _create_child_on_provider({"agent_id": "ag_x", "provider": "max2"})
+
+    assert result["error"] == "provider_not_ready"
+    assert "claude auth login" in result["message"]
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_deletes_a_child_its_provider_cannot_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    A Claude account for a Codex agent is refused once the server resolves the
+    child's harness: the child is deleted before any message reaches it, and
+    the error lists the providers that can run it.
+    """
+    _child_account_host(monkeypatch, tmp_path)
+
+    result, requests = await _create_child_on_provider(
+        {"agent_id": "ag_codex", "provider": "max2", "message": "start"},
+        child_harness="codex-native",
+    )
+
+    assert result["error"] == "provider_not_for_harness"
+    assert "Providers for 'codex-native' on this host: codex_b (default), dbx" in result["message"]
+    assert ("DELETE", "/v1/sessions/conv_child", None) in requests
+    assert not [path for _, path, _ in requests if path.endswith("/events")]
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_refuses_a_provider_with_config_path() -> None:
+    """The multipart create cannot carry a provider, so it is refused, not dropped."""
+    result, requests = await _create_child_on_provider(
+        {"config_path": "helper.yaml", "provider": "max2"}
+    )
+
+    assert "supported only with 'agent_id'" in result["error"]
+    assert requests == []
 
 
 @pytest.mark.asyncio

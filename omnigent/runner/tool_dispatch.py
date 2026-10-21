@@ -2419,13 +2419,14 @@ async def _execute_list_models_tool(*, agent_spec: AgentSpec | None) -> str:
     :param agent_spec: The calling session's agent spec; its
         ``sub_agents`` define the worker rows.
     :returns: JSON mapping of worker name (plus ``"self"``) to its
-        ``{source, verified, models, note}`` row, or an error string.
+        ``{source, verified, models, note}`` row, plus this host's
+        ``host_providers``, or an error string.
     """
     if agent_spec is None:
         return "Error: sys_list_models requires an agent spec"
-    from omnigent.models.model_catalog import catalog_for_spec
+    from omnigent.tools.builtins.list_models import list_models_payload
 
-    catalog = await asyncio.to_thread(catalog_for_spec, agent_spec)
+    catalog = await asyncio.to_thread(list_models_payload, agent_spec)
     return json.dumps(catalog)
 
 
@@ -3497,7 +3498,21 @@ async def _execute_session_create(
                 )
             }
         )
+    provider = args.get("provider")
+    if provider is not None and (not isinstance(provider, str) or not provider):
+        return json.dumps(
+            {"error": "sys_session_create 'provider' must be a non-empty provider name"}
+        )
     if has_config_path:
+        if provider is not None:
+            return json.dumps(
+                {
+                    "error": (
+                        "sys_session_create 'provider' is supported only with "
+                        "'agent_id'; the 'config_path' create cannot carry it."
+                    )
+                }
+            )
         # The multipart create carries only the config bundle, so an effort
         # passed here would never reach the child. Refuse instead of dropping it.
         if args.get("reasoning_effort") is not None:
@@ -3518,6 +3533,15 @@ async def _execute_session_create(
             publish_event=publish_event,
             agent_spec=agent_spec,
             runner_workspace=runner_workspace,
+        )
+    if provider is not None:
+        return await _session_create_on_provider(
+            str(agent_id),
+            provider,
+            args,
+            server_client=server_client,
+            conversation_id=conversation_id,
+            publish_event=publish_event,
         )
     body = _build_session_create_body(
         str(agent_id),
@@ -3549,6 +3573,123 @@ async def _execute_session_create(
         title=args.get("title"),
         publish_event=publish_event,
     )
+
+
+async def _session_create_on_provider(
+    agent_id: str,
+    provider: str,
+    args: _JsonObject,
+    *,
+    server_client: httpx.AsyncClient,
+    conversation_id: str,
+    publish_event: Callable[[str, _JsonObject], None] | None,
+) -> str:
+    """
+    ``sys_session_create`` with ``provider``: start the child on that account.
+
+    A child whose account differs from the one this runner uses gets its own
+    runner on this runner's host and workspace, created with
+    ``provider_override``. The first message is posted only after the child's
+    harness is known to run on the provider, so no turn starts on another
+    account.
+
+    :param agent_id: The existing agent to launch, e.g. ``"ag_abc123"``.
+    :param provider: The ``providers:`` entry name, e.g. ``"claude-alt"``.
+    :param args: Parsed tool arguments.
+    :param server_client: HTTP client pointed at the Omnigent server.
+    :param conversation_id: The caller's session id — the forced parent.
+    :param publish_event: SSE publish callback for ``session.created``.
+    :returns: JSON handle on success; a JSON error object otherwise.
+    """
+    from omnigent.runner.child_account import (
+        ChildAccountError,
+        choose_child_account,
+        require_child_harness,
+    )
+
+    try:
+        account = await asyncio.to_thread(choose_child_account, provider)
+    except ChildAccountError as exc:
+        return json.dumps(exc.as_tool_error(provider))
+    body = _build_session_create_body(
+        agent_id,
+        conversation_id,
+        args.get("title"),
+        None,
+        model=args.get("model"),
+        reasoning_effort=args.get("reasoning_effort"),
+    )
+    if account.own_runner:
+        try:
+            host = await _host_bound_snapshot(server_client, conversation_id)
+        except (httpx.HTTPError, ValueError):
+            host = None
+        host_id = _optional_string(host.get("host_id")) if host else None
+        workspace = _optional_string(host.get("workspace")) if host else None
+        if not host_id or not workspace:
+            unavailable = ChildAccountError(
+                "provider_unavailable",
+                "Only a session running on a connected host can start a child on "
+                "another account. Omit 'provider' to use this session's account.",
+            )
+            return json.dumps(unavailable.as_tool_error(provider))
+        body.update(host_id=host_id, workspace=workspace, provider_override=provider)
+    try:
+        # A child with its own runner waits for the host to launch it.
+        resp = await server_client.post("/v1/sessions", json=body, timeout=90.0)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"sys_session_create failed: {exc}"})
+    if resp.status_code == 404:
+        return json.dumps({"error": "agent_not_found", "agent_id": agent_id})
+    if resp.status_code in (401, 403):
+        return json.dumps({"error": "access_denied", "agent_id": agent_id})
+    if resp.status_code >= 400:
+        return json.dumps(
+            {
+                "error": f"sys_session_create returned {resp.status_code}",
+                "provider": provider,
+                "message": _omnigent_error_message(resp) or resp.text[:500],
+            }
+        )
+    data = resp.json()
+    child_id = data.get("id")
+    if not isinstance(child_id, str) or not child_id:
+        return json.dumps({"error": "server did not return a child session id"})
+    try:
+        await asyncio.to_thread(
+            require_child_harness,
+            provider,
+            _optional_string(data.get("harness")),
+            _optional_string(data.get("agent_name")),
+        )
+    except ChildAccountError as exc:
+        error = exc.as_tool_error(provider)
+        warning = await _teardown_failed_child(server_client, child_id, created_child=True)
+        if warning:
+            error["warning"] = warning
+        return json.dumps(error)
+    message = args.get("message")
+    if isinstance(message, str) and message:
+        message_error = await _post_child_first_message(child_id, message, server_client)
+        if message_error is not None:
+            return message_error
+    handle = json.loads(
+        _finalize_created_session(
+            data,
+            conversation_id=conversation_id,
+            agent_id=agent_id,
+            title=args.get("title"),
+            publish_event=publish_event,
+        )
+    )
+    handle["provider"] = provider
+    if account.own_runner:
+        handle["note"] = (
+            "The child runs in its own runner on this host, so it does not wake you "
+            "when it finishes: check it with sys_session_get_info or "
+            "sys_session_get_history."
+        )
+    return json.dumps(handle)
 
 
 def _bundle_local_agent_source(source: Path) -> bytes:
@@ -5685,29 +5826,48 @@ async def _agent_list_host_readiness(
     try:
         async with asyncio.timeout(_AGENT_READINESS_TIMEOUT_S):
             host_id = os.environ.get(RUNNER_SLICE_KEY_ENV_VAR)
+            if not host_id:
+                snapshot = await _host_bound_snapshot(server_client, conversation_id)
+                host_id = _optional_string(snapshot.get("host_id")) if snapshot else None
             if host_id:
                 return await _host_harnesses_or_none(host_id, server_client)
-            seen: set[str] = set()
-            while conversation_id and conversation_id not in seen:
-                if len(seen) >= _AGENT_READINESS_MAX_DEPTH:
-                    return None
-                seen.add(conversation_id)
-                response = await server_client.get(
-                    f"{_session_url(conversation_id)}",
-                    params={"include_items": "false", "include_liveness": "false"},
-                    timeout=_AGENT_READINESS_TIMEOUT_S,
-                )
-                if response.status_code != 200:
-                    return None
-                snapshot = _string_object_dict(response.json())
-                if snapshot is None:
-                    return None
-                host_id = _optional_string(snapshot.get("host_id"))
-                if host_id:
-                    return await _host_harnesses_or_none(host_id, server_client)
-                conversation_id = _optional_string(snapshot.get("parent_session_id"))
     except (TimeoutError, httpx.HTTPError, ValueError):
         return None
+    return None
+
+
+async def _host_bound_snapshot(
+    server_client: httpx.AsyncClient,
+    conversation_id: str | None,
+) -> _JsonObject | None:
+    """
+    Return the nearest host-bound session from *conversation_id* up its parents.
+
+    Children share that session's runner, so it names the host and workspace
+    this runner was launched with. ``None`` when no session in a bounded walk
+    is host-bound or a read fails.
+
+    :raises httpx.HTTPError: When a session read fails in transport.
+    :raises ValueError: When a session read returns invalid JSON.
+    """
+    seen: set[str] = set()
+    while conversation_id and conversation_id not in seen:
+        if len(seen) >= _AGENT_READINESS_MAX_DEPTH:
+            return None
+        seen.add(conversation_id)
+        response = await server_client.get(
+            f"{_session_url(conversation_id)}",
+            params={"include_items": "false", "include_liveness": "false"},
+            timeout=_AGENT_READINESS_TIMEOUT_S,
+        )
+        if response.status_code != 200:
+            return None
+        snapshot = _string_object_dict(response.json())
+        if snapshot is None:
+            return None
+        if _optional_string(snapshot.get("host_id")):
+            return snapshot
+        conversation_id = _optional_string(snapshot.get("parent_session_id"))
     return None
 
 

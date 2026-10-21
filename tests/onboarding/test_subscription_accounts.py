@@ -23,6 +23,7 @@ from omnigent.onboarding.subscription_accounts import (
     apply_default_account_env,
     claude_account_env,
     default_accounts_env,
+    host_provider_summary,
     provider_choices,
     require_session_account_dir,
     require_subscription_dir_active,
@@ -461,6 +462,66 @@ def test_provider_choices_list_family_providers_without_secrets(tmp_path: Path) 
     # Picker labels never name the host's login directories.
     assert str(tmp_path) not in json.dumps(rows)
     assert provider_choices(_session_config(tmp_path), "cursor") == []
+
+
+def test_host_provider_summary_names_each_providers_clis_and_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_claude_login(tmp_path / "m1")
+    config = _session_config(tmp_path)
+
+    rows = {row.pop("name"): row for row in host_provider_summary(config)}
+
+    assert rows["max1"] == {
+        "kind": "subscription",
+        "label": "claude login (own directory)",
+        "clis": ["claude"],
+        "default_for": ["claude"],
+        "ready": True,
+    }
+    assert rows["max2"]["ready"] is False
+    assert rows["codex_b"]["clis"] == rows["codex_b"]["default_for"] == ["codex"]
+    assert rows["dbx"]["clis"] == ["claude", "codex"]
+    assert rows["openrouter"]["clis"] == ["claude"]
+    assert str(tmp_path) not in json.dumps(rows)
+
+    # Inside a runner on Databricks, children of either CLI default to it.
+    monkeypatch.setenv(SESSION_PROVIDER_ENV, "dbx")
+    dbx = next(row for row in host_provider_summary(config) if row["name"] == "dbx")
+    assert dbx["default_for"] == ["claude", "codex"]
+
+
+@pytest.mark.parametrize(
+    "session_provider,provider,own_runner",
+    [
+        (None, "max1", False),
+        (None, "max2", True),
+        (None, "codex_b", False),
+        # Databricks serves both families, so the runner must use it for both.
+        (None, "dbx", True),
+        ("dbx", "dbx", False),
+        ("dbx", "max1", True),
+        ("dbx", "codex_b", True),
+    ],
+)
+def test_child_account_shares_the_runner_only_on_the_runners_account(
+    config_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    session_provider: str | None,
+    provider: str,
+    own_runner: bool,
+) -> None:
+    from omnigent.runner.child_account import choose_child_account
+
+    _write_config(config_home, _session_config(tmp_path))
+    for login in ("m1", "m2"):
+        _write_claude_login(tmp_path / login)
+    _write_codex_login(tmp_path / "cb")
+    if session_provider is not None:
+        monkeypatch.setenv(SESSION_PROVIDER_ENV, session_provider)
+
+    assert choose_child_account(provider).own_runner is own_runner
 
 
 def test_host_launch_env_uses_defaults_or_the_session_choice(

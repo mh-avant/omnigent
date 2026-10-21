@@ -3741,6 +3741,10 @@ async def _heal_subagent_runner_binding_via_parent(
     # live runner.  A single hop covers the common case; two hops cover nested
     # sub-agents where the immediate parent's runner is also stale but the root
     # is still healthy.
+    if child_conv.host_id is not None and child_conv.provider_override is not None:
+        # A child on its own provider runs in its own runner, launched with that
+        # provider; its host relaunches it rather than an ancestor adopting it.
+        return None
     candidate_ids: list[str] = []
     if child_conv.parent_conversation_id and child_conv.parent_conversation_id != child_conv.id:
         candidate_ids.append(child_conv.parent_conversation_id)
@@ -11566,7 +11570,9 @@ async def _create_session_from_existing_agent(
     # Inherit runner affinity from the parent session so the child
     # is assigned to the same runner (sub-agent co-location).
     inherited_runner_id: str | None = None
-    if body.parent_session_id is not None:
+    # A child that chooses a provider (validated above to be host-bound) gets
+    # a runner launched with it; the parent's runner carries the parent's accounts.
+    if body.parent_session_id is not None and body.provider_override is None:
         parent_conv = _parent_for_routing
         if parent_conv is not None:
             inherited_runner_id = parent_conv.runner_id

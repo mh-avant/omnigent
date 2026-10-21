@@ -550,6 +550,28 @@ async def test_nested_subagent_parent_without_inbox_is_acked(
 
 
 @pytest.mark.asyncio
+async def test_child_in_its_own_runner_is_acked_without_parent_inbox(
+    _clean_subagent_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child launched in its own runner (on another account) is ACKed, not retried.
+
+    Its parent runs on another runner, so its inbox never appears here and a
+    503 would only make the forwarder retry until it gives up.
+    """
+    from omnigent.debug_logging import PRIMARY_SESSION_ID_ENV_VAR
+
+    monkeypatch.setenv(PRIMARY_SESSION_ID_ENV_VAR, CHILD_SESSION_ID)
+    http, items = await _post_native_idle(
+        child_body=_child_snapshot(sub_agent_name=None, parent_session_id=PARENT_SESSION_ID),
+        seed_parent_inbox=False,
+        register_work=False,
+    )
+
+    assert http == 204
+    assert items == []
+
+
+@pytest.mark.asyncio
 async def test_retained_result_is_delivered_when_parent_inbox_is_created(
     _clean_subagent_registry: None,
 ) -> None:

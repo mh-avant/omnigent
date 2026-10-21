@@ -131,6 +131,35 @@ How the choice applies:
 - Only sessions on a connected host can choose. Managed sandboxes use their
   deployment's inference settings.
 
+## Child sessions an agent starts
+
+An agent with `spawn: true` can start a child session on one of its host's
+providers by passing `provider` to `sys_session_create`, for example a Claude
+session on Databricks starting one child on a Claude subscription and another
+on a Codex subscription:
+
+```json
+{"agent_id": "ag_...", "provider": "claude-max2", "message": "..."}
+```
+
+`sys_list_models` lists the choices under `host_providers`, with each
+provider's kind, the CLIs it serves (`claude` for claude-native and claude-sdk
+agents, `codex` for codex-native and codex agents), which CLIs use it by default
+and whether it is signed in. Without `provider` the child runs on the parent's
+provider when that serves the child's CLI, otherwise on the host default.
+
+The tool checks the choice before the child starts. It returns
+`provider_not_found` when the host has no such provider, `provider_not_ready`
+when the account is not signed in (with the command that signs it in),
+`provider_not_for_harness` when the provider cannot run the child's agent
+(listing the ones that can), and `provider_unavailable` when the parent is not
+on a connected host. `provider` works only with `agent_id`, not `config_path`.
+
+A child on an account other than the one its parent's runner uses gets its own
+runner on the same host and workspace. It does not wake the parent when it
+finishes, so the parent checks it with `sys_session_get_info` or
+`sys_session_get_history`.
+
 ## Switching a running session
 
 A Claude session (claude-native or claude-sdk) can move to another provider

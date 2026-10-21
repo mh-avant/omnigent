@@ -30,6 +30,8 @@ def _conv(
     parent_id: str | None = None,
     root_id: str | None = None,
     labels: dict[str, str] | None = None,
+    host_id: str | None = None,
+    provider_override: str | None = None,
 ) -> Any:
     """Build a minimal conversation stand-in with the fields the helper reads."""
     return types.SimpleNamespace(
@@ -38,6 +40,8 @@ def _conv(
         parent_conversation_id=parent_id,
         root_conversation_id=root_id or conv_id,
         labels=labels or {},
+        host_id=host_id,
+        provider_override=provider_override,
     )
 
 
@@ -89,6 +93,35 @@ def _patch_forward_and_wait(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(sessions_mod, "_wait_for_runner_client", _fake_wait)
     monkeypatch.setattr(sessions_mod, "_forward_session_change_to_runner", _fake_forward)
     return state
+
+
+async def test_child_on_its_own_provider_is_never_moved_to_the_parent_runner(
+    _patch_forward_and_wait: dict[str, Any],
+) -> None:
+    """A child launched in its own runner on another account keeps that runner.
+
+    Moving it onto the parent's runner would run it on the parent's account.
+    """
+    child = _conv(
+        "conv_child",
+        runner_id="runner_child",
+        parent_id="conv_parent",
+        host_id="host_1",
+        provider_override="claude-alt",
+    )
+    store = _FakeStore(_conv("conv_parent", runner_id="runner_parent"))
+
+    result = await _recover_subagent_status_forward_via_parent(
+        child,
+        runner_router=None,
+        tunnel_registry=object(),
+        conversation_store=store,  # type: ignore[arg-type]
+        forward_body={"type": "external_session_status", "data": {"status": "idle"}},
+    )
+
+    assert result is None
+    assert store.rebinds == []
+    assert _patch_forward_and_wait["forwarded_with"] == []
 
 
 async def test_recover_rebinds_to_parent_runner_and_redelivers(

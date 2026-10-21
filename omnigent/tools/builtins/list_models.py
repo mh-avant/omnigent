@@ -11,12 +11,40 @@ and the in-process path runs the same enumerator via :meth:`invoke`.
 from __future__ import annotations
 
 import json
+import logging
 
 # Any: tool schemas are heterogeneous dicts.
 from typing import Any
 
 from omnigent.spec.types import AgentSpec
 from omnigent.tools.base import Tool, ToolContext
+
+_logger = logging.getLogger(__name__)
+
+# A worker with this name keeps its row.
+HOST_PROVIDERS_KEY = "host_providers"
+
+
+def list_models_payload(spec: AgentSpec) -> dict[str, Any]:
+    """
+    Build the ``sys_list_models`` result: worker rows plus this host's providers.
+
+    :param spec: The calling agent's spec.
+    :returns: :func:`~omnigent.models.model_catalog.catalog_for_spec` rows,
+        plus :data:`HOST_PROVIDERS_KEY` listing the accounts
+        ``sys_session_create`` can start a child on (omitted when the
+        provider config cannot be read).
+    """
+    from omnigent.models.model_catalog import catalog_for_spec
+    from omnigent.onboarding.provider_config import load_config
+    from omnigent.onboarding.subscription_accounts import host_provider_summary
+
+    payload: dict[str, Any] = dict(catalog_for_spec(spec))
+    try:
+        payload.setdefault(HOST_PROVIDERS_KEY, host_provider_summary(load_config()))
+    except Exception:
+        _logger.debug("host provider listing failed", exc_info=True)
+    return payload
 
 
 class SysListModelsTool(Tool):
@@ -61,7 +89,12 @@ class SysListModelsTool(Tool):
             "(source 'none' means dispatches to that worker cannot run "
             "in this deployment). Each entry reports {source, verified, "
             "models: [{id, family, context_window?}], note}; pick "
-            "'args.model' values verbatim from the target worker's list."
+            "'args.model' values verbatim from the target worker's list. "
+            "'host_providers' lists the accounts this host can run a "
+            "sys_session_create child on: {name, kind, label, clis "
+            "(claude: claude-native/claude-sdk agents; codex: "
+            "codex-native/codex agents), default_for, ready}; pass a name "
+            "as sys_session_create 'provider'."
         )
 
     def get_schema(self) -> dict[str, Any]:
@@ -92,9 +125,7 @@ class SysListModelsTool(Tool):
         :param arguments: Ignored — the tool takes no parameters.
         :param ctx: Tool execution context (unused).
         :returns: JSON mapping of worker name (plus ``"self"``) to its
-            ``{source, verified, models, note}`` row.
+            ``{source, verified, models, note}`` row, plus ``host_providers``.
         """
         del arguments, ctx
-        from omnigent.models.model_catalog import catalog_for_spec
-
-        return json.dumps(catalog_for_spec(self._spec))
+        return json.dumps(list_models_payload(self._spec))

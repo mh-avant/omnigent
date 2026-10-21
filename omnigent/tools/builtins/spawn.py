@@ -888,7 +888,9 @@ class SysSessionCreateTool(Tool):
       a fresh session-scoped agent.
 
     An optional ``message`` is queued as the child's first user turn;
-    an optional ``title`` labels the session.
+    an optional ``title`` labels the session. An optional ``provider``
+    runs the child on another account of this host (see
+    ``docs/providers.md``).
 
     Returns a handle ``{conversation_id, agent_id, title, status}``. The
     session runs asynchronously — use ``sys_session_get_history`` /
@@ -1019,6 +1021,24 @@ class SysSessionCreateTool(Tool):
                                 "'agent_id', and only for harnesses with "
                                 "effort plumbing; omit to use the agent's "
                                 "default."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Optional account for the child: the name "
+                                "of a providers: entry on this host, e.g. "
+                                "'claude-alt' (a Claude subscription) or "
+                                "'chatgpt' (a Codex subscription). Omit to "
+                                "use your own provider when it serves the "
+                                "child's CLI, else the host default. "
+                                "sys_list_models lists the names under "
+                                "'host_providers'; the provider must serve "
+                                "the child agent's CLI. Only valid with "
+                                "'agent_id'. A child on an account other "
+                                "than yours runs in its own runner and "
+                                "does not wake you when it finishes; check "
+                                "it with sys_session_get_info."
                             ),
                         },
                     },

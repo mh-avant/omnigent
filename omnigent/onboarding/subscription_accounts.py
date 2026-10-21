@@ -423,3 +423,38 @@ def provider_choices(
             }
         )
     return rows
+
+
+# The CLI families an agent can pick a child session's account for, each with
+# the harness whose provider listing describes it.
+ACCOUNT_CLI_HARNESSES: dict[str, str] = {"claude": "claude-native", "codex": "codex-native"}
+
+
+def host_provider_summary(config: dict[str, object]) -> list[dict[str, object]]:
+    """List this host's providers for an agent choosing a child session's account.
+
+    :param config: The parsed ``~/.omnigent/config.yaml`` mapping.
+    :returns: One row per provider: ``name``, ``kind``, ``label``, ``clis`` (the
+        CLI families it serves, e.g. ``["claude"]``), ``default_for`` (the
+        families whose children run on it when none is chosen) and ``ready``.
+    :raises OmnigentError: If the provider config is malformed.
+    """
+    rows: dict[str, dict[str, object]] = {}
+    clis: dict[str, list[str]] = {}
+    defaults: dict[str, list[str]] = {}
+    for cli, harness in ACCOUNT_CLI_HARNESSES.items():
+        for choice in provider_choices(config, harness):
+            name = str(choice["name"])
+            if name not in rows:
+                rows[name] = {
+                    "name": name,
+                    "kind": choice["kind"],
+                    "label": choice["label"],
+                    "clis": clis.setdefault(name, []),
+                    "default_for": defaults.setdefault(name, []),
+                    "ready": choice["ready"],
+                }
+            clis[name].append(cli)
+            if choice["default"]:
+                defaults[name].append(cli)
+    return list(rows.values())

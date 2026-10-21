@@ -1649,7 +1649,8 @@ class _SessionCreateRequestBase(BaseModel):
         for the session's harness family when launching the runner, and a
         missing login fails the launch. ``None`` uses the family default.
         Create-time only; host-bound sessions only. Sub-agents inherit it
-        when they run in the same family.
+        when they run in the same family. A child created with it (and its
+        parent's ``host_id``) gets its own runner instead of its parent's.
     :param smart_routing_message: The user's first-message text, used to
         route the harness at create time. Only read on the top-level
         Smart Routing path (``harness_override: "auto"`` on a native

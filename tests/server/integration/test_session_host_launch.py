@@ -509,6 +509,48 @@ async def test_inline_launch_carries_the_session_provider(
     assert conv.provider_override == "claude-max2"
 
 
+async def test_child_on_its_own_provider_gets_its_own_runner(
+    client: httpx.AsyncClient,
+    app: FastAPI,
+    db_uri: str,
+) -> None:
+    """A child that chooses a provider is launched on the host, not co-located.
+
+    The provider lives in the runner's environment, so sharing the parent's
+    runner would run the child on the parent's account.
+    """
+    comm = await _connect_host(app, [CAP_SESSION_PROVIDER])
+    agent = await create_test_agent(client)
+    responder = asyncio.create_task(_serve_one_launch(comm, launch_status="launched"))
+    parent = await client.post(
+        "/v1/sessions",
+        json={"agent_id": agent["id"], "host_id": _HOST_ID, "workspace": _WORKSPACE},
+    )
+    await responder
+    assert parent.status_code == 201, parent.text
+
+    responder = asyncio.create_task(_serve_one_launch(comm, launch_status="launched"))
+    child = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent["id"],
+            "parent_session_id": parent.json()["id"],
+            "host_id": _HOST_ID,
+            "workspace": _WORKSPACE,
+            "provider_override": "claude-max2",
+        },
+    )
+    frame = await responder
+
+    assert child.status_code == 201, child.text
+    assert frame.session_id == child.json()["id"]
+    assert frame.provider == "claude-max2"
+    assert child.json()["runner_id"] not in (None, parent.json()["runner_id"])
+    conv = SqlAlchemyConversationStore(db_uri).get_conversation(child.json()["id"])
+    assert conv is not None
+    assert conv.parent_conversation_id == parent.json()["id"]
+
+
 @pytest.mark.parametrize(
     "payload,capabilities,detail",
     [

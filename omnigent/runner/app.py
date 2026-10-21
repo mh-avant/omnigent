@@ -6794,7 +6794,12 @@ def create_runner_app(
                 if (
                     delivery_ack.entry is not None
                     and delivery_ack.reason == _SUBAGENT_DELIVERY_MISSING_PARENT_INBOX
-                    and await _parent_is_nested_subagent(delivery_ack.entry)
+                    and (
+                        # A child launched in its own runner (on another
+                        # account) never has its parent on this runner.
+                        delivery_ack.entry.child_session_id == runner_primary_session_id()
+                        or await _parent_is_nested_subagent(delivery_ack.entry)
+                    )
                 ):
                     # Acknowledge instead of asking the forwarder to poll. The
                     # entry stays terminal and undelivered; it is handed over

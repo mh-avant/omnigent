@@ -110,3 +110,45 @@ def test_invoke_lists_acp_curated_models_without_gateway_credentials(
     ]
     assert parsed["acp_worker"]["source"] == "static"
     assert parsed["acp_worker"]["verified"] is False
+
+
+def test_invoke_lists_the_host_providers_a_child_can_run_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Agents find the names sys_session_create accepts as 'provider' here."""
+    isolate_provider_resolution(monkeypatch, tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n"
+        "  dbx:\n"
+        "    kind: databricks\n"
+        "    profile: alt\n"
+        "    default: true\n"
+        "  gateway:\n"
+        "    kind: gateway\n"
+        "    openai:\n"
+        "      base_url: https://gateway.example.com/v1\n"
+        "      api_key: sk-secret\n"
+    )
+
+    with patch("omnigent.models.model_catalog.catalog_for_spec", return_value={"self": {}}):
+        parsed = json.loads(SysListModelsTool(spec=_make_spec()).invoke("{}", _ctx()))
+
+    assert parsed["host_providers"] == [
+        {
+            "name": "dbx",
+            "kind": "databricks",
+            "label": "Databricks profile alt",
+            "clis": ["claude", "codex"],
+            "default_for": ["claude", "codex"],
+            "ready": True,
+        },
+        {
+            "name": "gateway",
+            "kind": "gateway",
+            "label": "gateway · gateway.example.com",
+            "clis": ["codex"],
+            "default_for": [],
+            "ready": True,
+        },
+    ]
+    assert "sk-secret" not in json.dumps(parsed)

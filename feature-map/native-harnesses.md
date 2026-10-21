@@ -44,6 +44,9 @@ implements them separately, so a fix for one harness does not reach the others.
 - `subagent-discovery`: Claude children appear under the agent that spawned
   them, including delayed spawns; an unresolved spawn does not keep an idle
   runner re-reading unchanged conversations.
+- `child-account`: with several accounts on the host, `sys_session_create`
+  `provider` starts a Claude or Codex child on a chosen account; the child runs
+  in its own runner when its parent's runner uses another account.
 - `disconnect`: startup waits and active operations settle when their native
   connection ends; reconnect can receive fresh events. Distinguish a native
   CLI disconnect, a runner going offline, and a browser stream reconnect.
@@ -94,6 +97,12 @@ without a session ID to resume.
 the linked session's Agents panel and check the child under its parent. Ask a
 child to delegate again to check nested ownership; completed children remain
 visible while the runner idles.
+
+**Child on another account:** with two Claude accounts (and a Codex one) under
+`providers:` (see `docs/providers.md`), ask a Claude session to call
+`sys_list_models`, then `sys_session_create` with a native agent's `agent_id`
+and each `provider`. Open each child and check its terminal runs on that
+account (`/status` in Claude, `/status` in Codex).
 
 **Native Gemini setup:** run `omni setup` → Antigravity → Configure native agy
 API key / gateway. If existing providers conflict, choose the Gemini default
