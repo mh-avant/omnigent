@@ -8,6 +8,7 @@
 // onto the app-global store instead, where it would look correct until a second
 // conversation existed.
 
+import { DEFAULT_CHAT_FEATURES } from "@/lib/chatFeatures";
 import type { ConversationState } from "./chatStore";
 
 // Exhaustive by construction: `Record<keyof ConversationState, true>` rejects a
@@ -35,6 +36,7 @@ const CONVERSATION_STATE_KEY_MAP: Record<keyof ConversationState, true> = {
   sessionHostId: true,
   costControlModeOverride: true,
   subagentRoutingOverride: true,
+  chatFeatures: true,
   codexPlanMode: true,
   claudePermissionMode: true,
   codexApprovalMode: true,
@@ -104,6 +106,7 @@ export function createInitialConversationState(): ConversationState {
     sessionHostId: null,
     costControlModeOverride: null,
     subagentRoutingOverride: null,
+    chatFeatures: [...DEFAULT_CHAT_FEATURES],
     codexPlanMode: false,
     claudePermissionMode: "",
     codexApprovalMode: "",

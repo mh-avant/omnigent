@@ -174,6 +174,8 @@ describe("createSession", () => {
       backgroundTaskCount: undefined,
       todos: [],
       codexModelOptions: [],
+      // A server without the setting reads as every feature on.
+      chatFeatures: ["run_commands"],
       terminalPending: false,
       sandboxStatus: null,
       mcpStartup: null,
@@ -967,6 +969,29 @@ describe("runner binding", () => {
     // "off" is a real value here too, so the clear signal is a JSON null. The
     // cleared session reads as Default, the same place "off" lands.
     expect(JSON.parse(init.body as string)).toEqual({ subagent_routing_override: null });
+  });
+
+  it.each([
+    { chatFeatures: [] as string[] | null, wire: [] as string[] | null },
+    { chatFeatures: null, wire: null },
+  ])("PATCHes chat_features $wire and reads the set back", async ({ chatFeatures, wire }) => {
+    fetchMock.mockResolvedValueOnce(
+      mockJsonResponse({
+        id: "conv_abc",
+        agent_id: "agent_xyz",
+        status: "idle",
+        created_at: 1704067200,
+        items: [],
+        chat_features: [],
+      }),
+    );
+
+    const session = await updateSession("conv_abc", { chatFeatures });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // A JSON null resets the session to the user's saved default.
+    expect(JSON.parse(init.body as string)).toEqual({ chat_features: wire });
+    expect(session.chatFeatures).toEqual([]);
   });
 
   it("forwards silent:true for persistence-only session updates", async () => {

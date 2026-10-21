@@ -1660,6 +1660,9 @@ class _SessionCreateRequestBase(BaseModel):
         real message after the create returns. ``None`` everywhere else,
         including the bundle-agent auto path, which routes on the first
         message event instead.
+    :param chat_features: Chat-feature keys to enable, e.g.
+        ``["run_commands"]``. ``None`` (the default) inherits the parent
+        session's set for a sub-agent, else uses the caller's saved default.
     :param apply_project_labels: Whether a ``project_id`` create adds the
         project's default labels under ``labels``. ``False`` when ``labels``
         is already the final set, e.g. a default removed for this session.
@@ -1696,6 +1699,7 @@ class _SessionCreateRequestBase(BaseModel):
     harness_override: str | None = None
     provider_override: str | None = None
     smart_routing_message: str | None = None
+    chat_features: list[str] | None = None
 
     @model_validator(mode="after")
     def _check_startup_input(self) -> Self:
@@ -1911,6 +1915,8 @@ class SessionCreateMetadata(BaseModel):
         provision on ``host_type: "managed"`` (one of the server's
         ``sandbox_providers``); ``None`` takes the server's first. Only
         valid with ``host_type: "managed"``.
+    :param chat_features: Chat-feature keys to enable, e.g.
+        ``["run_commands"]``. ``None`` uses the caller's saved default.
     :param apply_project_labels: Same as on the JSON create: ``False`` skips
         the project's default labels because ``labels`` is the final set.
     """
@@ -1930,6 +1936,7 @@ class SessionCreateMetadata(BaseModel):
     parent_session_id: str | None = None
     host_type: Literal["external", "managed"] = "external"
     sandbox_provider: str | None = None
+    chat_features: list[str] | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2266,6 +2273,9 @@ class SessionResponse(BaseModel):
         via ``PATCH /v1/sessions/{id}``.
     :param provider_override: The host provider the session was created on,
         e.g. ``"claude-max2"``; ``None`` for the family default.
+    :param chat_features: Enabled chat-feature keys in registry order, e.g.
+        ``["run_commands"]``. Sessions created before the setting existed
+        report the defaults.
     :param share_workspace_files: Whether the owner opted into letting
         view-level collaborators browse the workspace (Files/Changes/GitHub
         surfaces). ``False`` by default — read grants share the conversation
@@ -2431,6 +2441,7 @@ class SessionResponse(BaseModel):
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     share_workspace_files: bool = False
+    chat_features: list[str] = Field(default_factory=list)
     context_window: int | None = None
     last_total_tokens: int | None = None
     total_cost_usd: float | None = None
@@ -2537,6 +2548,11 @@ class UpdateSessionRequest(BaseModel):
         presence-is-the-clear-signal rule as
         ``cost_control_mode_override``). Effective on the next spawn, so
         it can be changed at any point in a session.
+    :param chat_features: Chat-feature keys to enable, e.g.
+        ``["run_commands"]``; ``[]`` disables all. Explicit JSON ``null``
+        resets to the caller's saved default; omitting the field leaves it
+        unchanged. Takes effect from the next turn (native harnesses: the
+        next launch).
     :param share_workspace_files: Opt-in that lets people with *view*
         (read-only) access browse the session's workspace files. ``True``
         turns sharing on, ``False`` turns it off (back to edit-only, the
@@ -2596,6 +2612,7 @@ class UpdateSessionRequest(BaseModel):
     approval_mode: str | None = None
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
+    chat_features: list[str] | None = None
     share_workspace_files: bool | None = None
     external_session_id: str | None = None
     terminal_launch_args: list[str] | None = None
@@ -5188,6 +5205,23 @@ HarnessStreamEvent = (
     | SubagentCompletedEvent
     | SubagentToolCallEvent
 )
+
+
+# ── Chat features ─────────────────────────────────────────────────
+
+
+class ChatFeatureOption(BaseModel):
+    """One chat feature a user can enable, for settings and new-chat pickers."""
+
+    key: str
+    title: str
+    description: str
+
+
+class ChatFeatureCatalogResponse(BaseModel):
+    """Every chat feature a session can enable, in display order."""
+
+    available: list[ChatFeatureOption]
 
 
 # ── Projects ──────────────────────────────────────────────────────

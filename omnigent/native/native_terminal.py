@@ -11,6 +11,11 @@ import click
 import httpx
 
 from omnigent.host.daemon_launch import error_text
+from omnigent.runtime.chat_features import (
+    DEFAULT_CHAT_FEATURES,
+    ChatFeature,
+    chat_features_from_wire,
+)
 from omnigent.util.http_retry import bounded_retry_after_seconds
 
 DAEMON_HOST_ONLINE_TIMEOUT_S = 30.0
@@ -119,6 +124,29 @@ def terminal_attach_url(base_url: str, session_id: str, terminal_id: str) -> str
         f"/resources/terminals/{url_component(terminal_id)}/attach"
     )
     return urllib.parse.urlunsplit((scheme, parsed.netloc, path, "", ""))
+
+
+async def fetch_session_chat_features(
+    client: httpx.AsyncClient,
+    session_id: str,
+) -> frozenset[ChatFeature]:
+    """Read a session's enabled chat features for a native launch.
+
+    Best-effort: a failed read must not block the launch, so it falls back to
+    the defaults, as does a server that predates the field.
+
+    :param client: HTTP client pointed at the Omnigent server.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :returns: The session's features, or the defaults.
+    """
+    try:
+        resp = await client.get(f"/v1/sessions/{url_component(session_id)}")
+        payload = resp.json() if resp.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        payload = None
+    if not isinstance(payload, dict):
+        return DEFAULT_CHAT_FEATURES
+    return chat_features_from_wire(payload.get("chat_features"))
 
 
 async def bind_session_runner(

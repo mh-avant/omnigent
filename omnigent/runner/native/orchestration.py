@@ -95,6 +95,11 @@ from omnigent.runner.session_init_protocol import (
     RunnerSessionInitEnvelope,
 )
 from omnigent.runner.transports.ws_tunnel.event_delivery import RunnerEventDispatcher
+from omnigent.runtime.chat_features import (
+    DEFAULT_CHAT_FEATURES,
+    ChatFeature,
+    chat_features_from_wire,
+)
 from omnigent.runtime.prompt import native_startup_instructions
 from omnigent.spec.types import AgentSpec
 
@@ -647,6 +652,8 @@ class _CodexNativeLaunchConfig:
         session's id here. ``None`` when unlabelled: the bridge is then keyed
         by the session id.
     :param labels: The session's labels, for the Unity Gateway request tags.
+    :param chat_features: The session's enabled chat features, whose
+        instructions join ``developer_instructions`` at launch.
     """
 
     workspace: Path
@@ -664,6 +671,7 @@ class _CodexNativeLaunchConfig:
     reasoning_effort: str | None = None
     bridge_id: str | None = None
     labels: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    chat_features: frozenset[ChatFeature] = DEFAULT_CHAT_FEATURES
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1357,12 +1365,14 @@ async def _codex_native_launch_config(
     # Only explicit values, including nulls, replace the legacy config read.
     if session_init is not None and launch_fields <= session_init.snapshot.model_fields_set:
         snapshot = session_init.snapshot.model_dump(mode="json")
+        chat_features = _session_init_chat_features(session_init)
     else:
         snapshot = await _fetch_native_launch_snapshot(
             server_client=server_client,
             session_id=session_id,
             runtime_label="Codex",
         )
+        chat_features = chat_features_from_wire(snapshot.get("chat_features"))
     terminal_launch_args = snapshot.get("terminal_launch_args")
     if terminal_launch_args is not None and not (
         isinstance(terminal_launch_args, list)
@@ -1476,6 +1486,7 @@ async def _codex_native_launch_config(
             if isinstance(labels, dict)
             else {}
         ),
+        chat_features=chat_features,
     )
 
 
@@ -5493,7 +5504,8 @@ async def _auto_create_codex_terminal(
             x
             for x in [
                 native_startup_instructions(
-                    _native_startup_raw_instructions_from_spec(agent_spec)
+                    _native_startup_raw_instructions_from_spec(agent_spec),
+                    launch_config.chat_features,
                 ),
                 _codex_routing_note,
             ]
@@ -7372,6 +7384,20 @@ def _claude_native_pinned_provider(agent_spec: AgentSpec | ResolvedSpec | None) 
     return auth.name if isinstance(auth, ProviderAuth) else None
 
 
+def _session_init_chat_features(
+    session_init: RunnerSessionInitEnvelope | None,
+) -> frozenset[ChatFeature]:
+    """Read the session's chat features from its init snapshot.
+
+    :param session_init: Versioned server snapshot, or ``None``.
+    :returns: The snapshot's features; the defaults when there is no snapshot
+        or the server predates the field.
+    """
+    if session_init is None or "chat_features" not in session_init.snapshot.model_fields_set:
+        return DEFAULT_CHAT_FEATURES
+    return chat_features_from_wire(getattr(session_init.snapshot, "chat_features", None))
+
+
 def _native_startup_raw_instructions_from_spec(
     agent_spec: AgentSpec | ResolvedSpec | None,
 ) -> str | None:
@@ -8341,6 +8367,7 @@ class _ClaudeSessionLaunchMetadata:
     fork_carry_history: bool = False
     #: The session's labels, for the Unity Gateway request tags.
     labels: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    chat_features: frozenset[ChatFeature] = DEFAULT_CHAT_FEATURES
     #: Both routing fields come from ``routing_class_from_snapshot``, so an
     #: auto-harness session always reads as routing-enabled too. Deriving them
     #: separately was the bug: a sub-agent child of a routed parent carries the
@@ -8389,6 +8416,7 @@ def _claude_launch_metadata_from_envelope(
         ),
         fork_carry_history=snapshot.labels.get(FORK_CARRY_HISTORY_LABEL_KEY) == "1",
         labels=dict(snapshot.labels),
+        chat_features=_session_init_chat_features(session_init),
     )
 
 
@@ -8456,6 +8484,7 @@ async def _load_legacy_claude_launch_metadata(
         ),
         fork_carry_history=labels.get(FORK_CARRY_HISTORY_LABEL_KEY) == "1",
         labels={str(key): str(value) for key, value in labels.items()},
+        chat_features=chat_features_from_wire(snapshot.get("chat_features")),
     )
     permission_mode = _claude_launch_permission_mode(metadata.terminal_launch_args)
     _logger.info(
@@ -9280,7 +9309,8 @@ async def _auto_create_claude_terminal(
             x
             for x in [
                 native_startup_instructions(
-                    _native_startup_raw_instructions_from_spec(agent_spec)
+                    _native_startup_raw_instructions_from_spec(agent_spec),
+                    launch_metadata.chat_features,
                 ),
                 routed_spawn_note,
             ]

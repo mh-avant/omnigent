@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from omnigent.native import native_terminal
+from omnigent.runtime.chat_features import DEFAULT_CHAT_FEATURES, ChatFeature
 
 
 @pytest.mark.asyncio
@@ -279,3 +280,33 @@ def test_normalize_extra_args_extra_args_wins_over_legacy_with_warning() -> None
             extra_args=("--new",), legacy_args=("--old",), legacy_param="pi_args"
         )
     assert result == ("--new",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected"),
+    [
+        (200, {"id": "conv/abc"}, DEFAULT_CHAT_FEATURES),
+        (200, {"chat_features": []}, frozenset()),
+        (200, {"chat_features": ["run_commands"]}, frozenset({ChatFeature.RUN_COMMANDS})),
+        (404, {"error": "missing"}, DEFAULT_CHAT_FEATURES),
+    ],
+    ids=["older-server-defaults", "disabled", "enabled", "read-failed-defaults"],
+)
+async def test_fetch_session_chat_features(
+    status_code: int, payload: dict[str, object], expected: frozenset[ChatFeature]
+) -> None:
+    """A session's stored set wins; a missing key or failed read means the defaults."""
+    paths: list[str] = []
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.raw_path.decode())
+        return httpx.Response(status_code, json=payload)
+
+    async with httpx.AsyncClient(
+        base_url="http://test", transport=httpx.MockTransport(_handler)
+    ) as client:
+        features = await native_terminal.fetch_session_chat_features(client, "conv/abc")
+
+    assert features == expected
+    assert paths == ["/v1/sessions/conv%2Fabc"]

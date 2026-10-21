@@ -8,10 +8,24 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from omnigent.entities import Conversation
+from omnigent.runtime.chat_features import (
+    DEFAULT_CHAT_FEATURES,
+    decode_chat_features,
+    ordered_chat_features,
+)
 
 SessionInitProtocolVersion: TypeAlias = Literal[2]
 SESSION_INIT_PROTOCOL_VERSION: SessionInitProtocolVersion = 2
 SESSION_INIT_PAYLOAD_KEY = "session_init"
+
+
+def chat_feature_keys(encoded: str | None) -> list[str]:
+    """Decode a stored chat-features value to wire keys in registry order.
+
+    :param encoded: The session's stored value; ``None`` (a legacy row) means the defaults.
+    :returns: Keys such as ``["run_commands"]``.
+    """
+    return [str(feature) for feature in ordered_chat_features(decode_chat_features(encoded))]
 
 
 class RunnerSessionInitSnapshot(BaseModel):  # type: ignore[explicit-any]  # Pydantic uses Any
@@ -32,6 +46,10 @@ class RunnerSessionInitSnapshot(BaseModel):  # type: ignore[explicit-any]  # Pyd
     parent_session_id: str | None = None
     root_session_id: str | None = None
     inference_config: dict[str, object] | None = None
+    # Enabled chat-feature keys; a payload from an older server omits it.
+    chat_features: list[str] = Field(
+        default_factory=lambda: [str(f) for f in ordered_chat_features(DEFAULT_CHAT_FEATURES)]
+    )
 
 
 class RunnerSessionInitEnvelope(BaseModel):  # type: ignore[explicit-any]  # Pydantic uses Any
@@ -92,6 +110,7 @@ def build_runner_session_init_payload(
             parent_session_id=conversation.parent_conversation_id,
             root_session_id=conversation.root_conversation_id,
             inference_config=snapshot_runtime_config(conversation.inference_snapshot),
+            chat_features=chat_feature_keys(conversation.chat_features_override),
         ),
     )
     return {

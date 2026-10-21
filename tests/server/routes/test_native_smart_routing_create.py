@@ -967,7 +967,9 @@ async def test_unrouted_create_writes_no_subagent_routing_key(
                 SqlConversation.id == created.json()["id"]
             )
         ).scalar_one()
-    assert json.loads(blob) == {"reasoning_effort": "high"}
+    stored = json.loads(blob)
+    assert stored["reasoning_effort"] == "high"
+    assert "subagent_routing_override" not in stored
 
 
 async def test_native_candidates_impose_no_family_constraint() -> None:

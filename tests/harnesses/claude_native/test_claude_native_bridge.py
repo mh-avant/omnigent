@@ -4063,6 +4063,20 @@ def test_augment_claude_args_merges_caller_system_prompt(
     assert "--verbose" in args
 
 
+def test_augment_claude_args_keeps_user_system_prompt_without_framework_text(
+    tmp_path: Path,
+) -> None:
+    """With nothing to add, a user-supplied system prompt passes through untouched."""
+    user_args = ("--append-system-prompt", "User guidance.")
+
+    args = augment_claude_args(
+        user_args, bridge_dir=tmp_path, python_executable="/venv/bin/python"
+    )
+
+    assert args[: len(user_args)] == list(user_args)
+    assert args.count("--append-system-prompt") == 1
+
+
 def test_augment_claude_args_merges_caller_allowed_tools(tmp_path: Path) -> None:
     """Framework preapproval extends rather than replaces the user's allowlist."""
     args = augment_claude_args(

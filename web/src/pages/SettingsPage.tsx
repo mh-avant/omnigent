@@ -43,6 +43,7 @@ import {
   useState,
 } from "react";
 import { useViewerId } from "@/hooks/useViewerId";
+import { ChatFeaturesSettingsGroup } from "@/pages/settings/ChatFeaturesSettingsGroup";
 import {
   ArchiveRestoreIcon,
   AlertTriangleIcon,
@@ -1957,6 +1958,7 @@ function GeneralSection() {
             <NewChatProjectPromptControl />
           </div>
         </SettingsGroup>
+        <ChatFeaturesSettingsGroup />
         <SettingsGroup title="Terminal" testId="settings-group-terminal">
           <TerminalClipboardControl />
         </SettingsGroup>

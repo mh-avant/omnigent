@@ -15,6 +15,8 @@ import pytest
 
 from omnigent._runner_startup import RunnerStartupProgress
 from omnigent.harnesses.codex_native import main as codex_native
+from omnigent.runtime.chat_features import ChatFeature, chat_feature_instructions
+from omnigent.runtime.prompt import ITEM_LABEL_INSTRUCTION
 from tests.harnesses.codex_native.session._support import (
     _write_source_rollout,
 )
@@ -70,7 +72,16 @@ async def test_prepare_codex_terminal_fresh_session_passes_developer_instruction
         captured.update(kwargs)
         raise _Sentinel
 
+    fetched: list[str] = []
+
+    async def _fake_fetch_chat_features(
+        _client: object, session_id: str
+    ) -> frozenset[ChatFeature]:
+        fetched.append(session_id)
+        return frozenset({ChatFeature.RUN_COMMANDS})
+
     monkeypatch.setattr(codex_native, "_create_codex_session", _fake_create_session)
+    monkeypatch.setattr(codex_native, "fetch_session_chat_features", _fake_fetch_chat_features)
     monkeypatch.setattr(codex_native, "build_codex_native_server", _fake_build_codex_native_server)
 
     with pytest.raises(_Sentinel):
@@ -83,10 +94,16 @@ async def test_prepare_codex_terminal_fresh_session_passes_developer_instruction
             codex_args=(),
             command="codex",
             model=None,
-            developer_instructions="Be a concise, careful coding assistant.",
+            author_instructions="Be a concise, careful coding assistant.",
         )
 
-    assert captured.get("developer_instructions") == "Be a concise, careful coding assistant."
+    # A fresh session's chat features are the set the server stored on create.
+    assert fetched == ["conv_fresh_di"]
+    (run_commands_instruction,) = chat_feature_instructions({ChatFeature.RUN_COMMANDS})
+    assert captured.get("developer_instructions") == (
+        f"Be a concise, careful coding assistant.\n\n{ITEM_LABEL_INSTRUCTION}\n\n"
+        f"{run_commands_instruction}"
+    )
     assert captured["session_id"] == "conv_fresh_di"
 
 
@@ -200,6 +217,73 @@ async def test_prepare_codex_terminal_resumes_with_launch_provider(
     preload.assert_awaited_once()
     assert preload.await_args.kwargs["model_provider"] == expected_provider
     server.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_extra", "expects_feature_text"),
+    [({}, True), ({"chat_features": ["run_commands"]}, True), ({"chat_features": []}, False)],
+    ids=["older-server-defaults", "enabled", "disabled"],
+)
+async def test_prepare_codex_terminal_resume_uses_session_chat_features(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    session_extra: dict[str, Any],
+    expects_feature_text: bool,
+) -> None:
+    """Cold resume composes developer_instructions from the session's own chat features."""
+    from unittest.mock import AsyncMock
+
+    from omnigent.harnesses.codex_native.app_server import NativeCodexLaunch
+
+    captured: dict[str, Any] = {}
+
+    class _Sentinel(Exception):
+        pass
+
+    def _fake_build_codex_native_server(**kwargs: object) -> object:
+        captured.update(kwargs)
+        raise _Sentinel
+
+    monkeypatch.setattr("omnigent.harnesses.codex_native.bridge._BRIDGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        codex_native,
+        "_fetch_codex_session",
+        AsyncMock(
+            return_value={
+                "labels": {codex_native._WRAPPER_LABEL_KEY: codex_native._WRAPPER_LABEL_VALUE},
+                "external_session_id": "thread_test",
+                **session_extra,
+            }
+        ),
+    )
+    monkeypatch.setattr(codex_native, "_find_running_codex_terminal", AsyncMock(return_value=None))
+    monkeypatch.setattr(codex_native, "_ensure_local_codex_resume_rollout", AsyncMock())
+    monkeypatch.setattr(
+        codex_native,
+        "resolve_native_codex_launch",
+        lambda **_kwargs: NativeCodexLaunch([], "test-model", None),
+    )
+    monkeypatch.setattr(codex_native, "build_codex_native_server", _fake_build_codex_native_server)
+
+    with pytest.raises(_Sentinel):
+        await codex_native._prepare_codex_terminal(
+            base_url="http://127.0.0.1:8000",
+            headers={},
+            session_id="conv_test",
+            runner_id=None,
+            session_bundle=None,
+            codex_args=(),
+            command="codex",
+            model=None,
+            author_instructions="Author text.",
+        )
+
+    (run_commands_instruction,) = chat_feature_instructions({ChatFeature.RUN_COMMANDS})
+    expected = f"Author text.\n\n{ITEM_LABEL_INSTRUCTION}"
+    assert captured["developer_instructions"] == (
+        f"{expected}\n\n{run_commands_instruction}" if expects_feature_text else expected
+    )
 
 
 @pytest.mark.asyncio

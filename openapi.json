@@ -842,6 +842,47 @@
         "title": "CancelledEvent",
         "type": "object"
       },
+      "ChatFeatureCatalogResponse": {
+        "description": "Every chat feature a session can enable, in display order.",
+        "properties": {
+          "available": {
+            "items": {
+              "$ref": "#/components/schemas/ChatFeatureOption"
+            },
+            "title": "Available",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "ChatFeatureCatalogResponse",
+        "type": "object"
+      },
+      "ChatFeatureOption": {
+        "description": "One chat feature a user can enable, for settings and new-chat pickers.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "description"
+        ],
+        "title": "ChatFeatureOption",
+        "type": "object"
+      },
       "ChildSessionList": {
         "description": "Paginated list of child sessions; `data` is a page of `ChildSessionSummary`.",
         "properties": {
@@ -7891,6 +7932,14 @@
             "description": "Per-shell detail for the running tally above, so a reload can restore each shell's description/command. `None` when none are tracked (or when an older runner reported only the count).",
             "title": "Background Tasks"
           },
+          "chat_features": {
+            "description": "Enabled chat-feature keys in registry order, e.g. `[\"run_commands\"]`. Sessions created before the setting existed report the defaults.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Chat Features",
+            "type": "array"
+          },
           "context_window": {
             "anyOf": [
               {
@@ -9809,6 +9858,21 @@
             "description": "New archived state. `True` archives (hides the session from the default sidebar listing), `False` unarchives, `None` leaves unchanged. Owner-only (unlike `title`, which needs only edit access).",
             "title": "Archived"
           },
+          "chat_features": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Chat-feature keys to enable, e.g. `[\"run_commands\"]`; `[]` disables all. Explicit JSON `null` resets to the caller's saved default; omitting the field leaves it unchanged. Takes effect from the next turn (native harnesses: the next launch).",
+            "title": "Chat Features"
+          },
           "collaboration_mode": {
             "anyOf": [
               {
@@ -10904,6 +10968,28 @@
           }
         },
         "summary": "Branding Logo"
+      }
+    },
+    "/v1/chat-features": {
+      "get": {
+        "description": "Every chat feature a session can enable, in display order.",
+        "operationId": "list_chat_features_v1_chat_features_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatFeatureCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Chat Features",
+        "tags": [
+          "chat-features"
+        ]
       }
     },
     "/v1/extensions": {

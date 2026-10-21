@@ -64,6 +64,7 @@ from omnigent.db.db_models import workspace_scope
 from omnigent.entities import Conversation, ScheduledTask
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.mcp_selection import mcp_selection_revision
+from omnigent.runtime.chat_features import encode_chat_features
 from omnigent.server.auth import LEVEL_OWNER, LEVEL_READ, RESERVED_USER_LOCAL, RESERVED_USER_PUBLIC
 from omnigent.server.bundles import agent_for_user
 from omnigent.server.host_registry import host_owner_scope
@@ -73,6 +74,7 @@ from omnigent.server.routes._session_create_validation import (
     validate_session_model_metadata,
     validate_session_permission_mode,
 )
+from omnigent.server.routes.preferences import resolve_session_chat_features
 from omnigent.server.schemas import SessionEventInput
 
 _logger = logging.getLogger(__name__)
@@ -882,6 +884,12 @@ async def _agent_revision(deps: FireDeps, conv: Conversation) -> str | None:
 
 async def _create_session(deps: FireDeps, task: ScheduledTask) -> Conversation:
     """Create a conversation bound to the task's agent, carrying the stored spec."""
+    chat_features = await asyncio.to_thread(
+        resolve_session_chat_features,
+        None,
+        user_id=task.user_id,
+        preference_store=getattr(deps.app_state, "preference_store", None),
+    )
     conv: Conversation = await asyncio.to_thread(
         deps.conversation_store.create_conversation,
         agent_id=task.agent_id,
@@ -889,6 +897,7 @@ async def _create_session(deps: FireDeps, task: ScheduledTask) -> Conversation:
         host_id=task.host_id,
         workspace=task.workspace,
         terminal_launch_args=await _permission_mode_launch_args(deps, task),
+        chat_features_override=encode_chat_features(chat_features),
     )
     reasoning_effort = task.reasoning_effort
     if reasoning_effort is None:

@@ -73,6 +73,11 @@ from omnigent.runner.resource_registry import (
     SessionResourceRegistry,
 )
 from omnigent.runner.session_init_protocol import RunnerSessionInitEnvelope
+from omnigent.runtime.chat_features import (
+    DEFAULT_CHAT_FEATURES,
+    ChatFeature,
+    chat_feature_instructions,
+)
 from omnigent.runtime.prompt import ITEM_LABEL_INSTRUCTION
 from omnigent.spec.types import AgentSpec, ExecutorSpec
 from omnigent.terminals import TerminalRegistry
@@ -118,6 +123,18 @@ class _RecordingClaudeRegistry:
             name="claude:main",
             metadata={"terminal_name": "claude", "session_key": "main", "running": True},
         )
+
+
+(_RUN_COMMANDS_INSTRUCTION,) = chat_feature_instructions({ChatFeature.RUN_COMMANDS})
+# What a native launch appends for a session on the default chat features.
+_DEFAULT_NATIVE_GUIDANCE = f"{ITEM_LABEL_INSTRUCTION}\n\n{_RUN_COMMANDS_INSTRUCTION}"
+
+
+def _appended_system_prompt(args: list[str]) -> str | None:
+    """Return the ``--append-system-prompt`` value, or None when it is absent."""
+    if "--append-system-prompt" not in args:
+        return None
+    return args[args.index("--append-system-prompt") + 1]
 
 
 def _load_claude_invocation_settings(args: list[str]) -> dict[str, Any]:
@@ -1851,6 +1868,36 @@ async def test_claude_launch_metadata_envelope_never_calls_server() -> None:
     assert metadata.terminal_launch_args == ["--verbose"]
     assert metadata.external_session_id == "claude-session-id"
     assert metadata.fork_carry_history is True
+    assert metadata.chat_features == DEFAULT_CHAT_FEATURES
+
+
+@pytest.mark.parametrize(
+    ("snapshot_extra", "expected"),
+    [
+        ({}, DEFAULT_CHAT_FEATURES),
+        ({"chat_features": []}, frozenset()),
+        ({"chat_features": ["run_commands", "retired"]}, frozenset({ChatFeature.RUN_COMMANDS})),
+    ],
+    ids=["older-server", "disabled", "drops-unknown"],
+)
+def test_session_init_chat_features_reads_the_snapshot(
+    snapshot_extra: dict[str, Any], expected: frozenset[ChatFeature]
+) -> None:
+    """A snapshot without the field (an older server) means the defaults."""
+    from omnigent.runner.native.orchestration import _session_init_chat_features
+
+    envelope = RunnerSessionInitEnvelope.model_validate(
+        {
+            "protocol_version": 2,
+            "server_version": "0.6.0.dev0",
+            "session_id": "conv_features",
+            "agent_id": "agent_features",
+            "snapshot": {"created_at": 10, "updated_at": 11, **snapshot_extra},
+        }
+    )
+
+    assert _session_init_chat_features(envelope) == expected
+    assert _session_init_chat_features(None) == DEFAULT_CHAT_FEATURES
 
 
 def test_agent_os_env_from_spec_unwraps_resolved_and_handles_none() -> None:
@@ -1889,13 +1936,34 @@ def test_agent_os_env_from_spec_unwraps_resolved_and_handles_none() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_payload", "expected_prompt"),
+    [
+        (
+            {"labels": {}},
+            f"Be a concise, careful coding assistant.\n\n{_DEFAULT_NATIVE_GUIDANCE}",
+        ),
+        (
+            {"labels": {}, "chat_features": ["run_commands"]},
+            f"Be a concise, careful coding assistant.\n\n{_DEFAULT_NATIVE_GUIDANCE}",
+        ),
+        (
+            {"labels": {}, "chat_features": []},
+            f"Be a concise, careful coding assistant.\n\n{ITEM_LABEL_INSTRUCTION}",
+        ),
+    ],
+    ids=["older-server-defaults", "enabled", "disabled"],
+)
 async def test_auto_create_claude_terminal_passes_raw_instructions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    session_payload: dict[str, Any],
+    expected_prompt: str,
 ) -> None:
     """
     Host-spawned launch emits ``--append-system-prompt`` with the agent's
-    raw author instructions, followed by the item-label guidance.
+    raw author instructions, followed by the item-label guidance and the
+    session's chat-feature guidance.
 
     The managed-host wiring in ``runner/native/orchestration.py``
     (``augment_claude_args(..., append_system_prompt=
@@ -1939,7 +2007,7 @@ async def test_auto_create_claude_terminal_passes_raw_instructions(
             )
 
     def _handle_request(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"labels": {}})
+        return httpx.Response(200, json=session_payload)
 
     fake_client = httpx.AsyncClient(
         base_url="http://test-server",
@@ -1962,9 +2030,7 @@ async def test_auto_create_claude_terminal_passes_raw_instructions(
         agent_spec=agent_spec,
     )
 
-    assert _appended_system_prompt(captured["spec"].args) == (
-        f"Be a concise, careful coding assistant.\n\n{ITEM_LABEL_INSTRUCTION}"
-    )
+    assert _appended_system_prompt(captured["spec"].args) == expected_prompt
 
 
 @pytest.mark.asyncio
@@ -2704,7 +2770,7 @@ async def test_auto_create_claude_terminal_forwarder_skips_replayed_transcript_o
 
     # Session titles are generated by an isolated background job, so neither
     # fresh nor resumed Claude terminals receive framework rename instructions.
-    assert _appended_system_prompt(launched_args) == ITEM_LABEL_INSTRUCTION
+    assert _appended_system_prompt(launched_args) == _DEFAULT_NATIVE_GUIDANCE
 
 
 @pytest.mark.asyncio
@@ -5132,7 +5198,7 @@ async def test_auto_create_claude_terminal_registers_permission_hook(
     # early no longer cascades into "no server running" (#540).
     assert spec.keep_alive_after_exit is True
     args = spec.args
-    assert _appended_system_prompt(args) == ITEM_LABEL_INSTRUCTION
+    assert _appended_system_prompt(args) == _DEFAULT_NATIVE_GUIDANCE
     settings = _load_claude_invocation_settings(args)
     assert "PermissionRequest" in settings["hooks"]
     permission_hook = settings["hooks"]["PermissionRequest"][0]["hooks"][0]
@@ -5347,7 +5413,7 @@ async def test_a_routed_claude_native_launch_keeps_the_spawn_gate_and_the_pin(
     assert spec.env["ANTHROPIC_CUSTOM_MODEL_OPTION"] == "databricks-claude-opus-4-7"
     # A pinned session's spawns stay on the claude family, so it gets neither
     # the routed-spawn note nor the pre-approvals the cross-family hop needs.
-    assert _appended_system_prompt(spec.args) == ITEM_LABEL_INSTRUCTION
+    assert _appended_system_prompt(spec.args) == _DEFAULT_NATIVE_GUIDANCE
 
 
 async def test_an_auto_harness_launch_without_a_cost_control_stamp_is_still_routed(
@@ -5375,7 +5441,7 @@ async def test_an_auto_harness_launch_without_a_cost_control_stamp_is_still_rout
     assert any("claude_router_hook" in command for command in _claude_hook_commands(spec))
     assert spec.env["ANTHROPIC_CUSTOM_MODEL_OPTION"] == "databricks-claude-opus-4-7"
     # And the auto-harness extras, which only make sense alongside the router.
-    assert (_appended_system_prompt(spec.args) or "").startswith(f"{ITEM_LABEL_INSTRUCTION}\n\n")
+    assert (_appended_system_prompt(spec.args) or "").startswith(f"{_DEFAULT_NATIVE_GUIDANCE}\n\n")
     allowed = spec.args[spec.args.index("--allowedTools") + 1]
     assert "mcp__omnigent__sys_session_create" in allowed
 

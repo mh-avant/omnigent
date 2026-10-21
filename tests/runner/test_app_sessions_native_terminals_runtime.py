@@ -46,6 +46,7 @@ from omnigent.runner.session_init_protocol import (
     RunnerSessionInitEnvelope,
     RunnerSessionInitSnapshot,
 )
+from omnigent.runtime.chat_features import ChatFeature, chat_feature_instructions
 from omnigent.runtime.prompt import ITEM_LABEL_INSTRUCTION
 from omnigent.spec.types import AgentSpec, ExecutorSpec
 from tests.runner.conftest import (
@@ -576,6 +577,8 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
         model_override="gpt-5.4-mini",
         reasoning_effort="high",
         external_session_id=thread_id,
+        # Disabled chat features add no feature guidance to developer_instructions.
+        chat_features=[],
     ).model_dump(mode="json")
     session_init = (
         RunnerSessionInitEnvelope.model_validate(
@@ -1865,8 +1868,10 @@ async def test_auto_create_codex_terminal_uses_worktree_workspace_not_bundle_dir
         "mean the session snapshot workspace was ignored."
     )
     assert build_calls[0]["cwd"] != bundle_dir.resolve()  # never the spec-bundle dir
+    (run_commands_instruction,) = chat_feature_instructions({ChatFeature.RUN_COMMANDS})
     assert build_calls[0]["developer_instructions"] == (
-        f"Be a concise, careful coding assistant.\n\n{ITEM_LABEL_INSTRUCTION}"
+        f"Be a concise, careful coding assistant.\n\n{ITEM_LABEL_INSTRUCTION}\n\n"
+        f"{run_commands_instruction}"
     )
 
     # Sandbox-override regression: the launched Codex terminal must inherit

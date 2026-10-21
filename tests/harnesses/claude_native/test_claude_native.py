@@ -40,6 +40,7 @@ from omnigent.models.databricks_model_discovery import DatabricksClaudeCatalog
 from omnigent.native import native_terminal
 from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
 from omnigent.runtime import tool_result_replay as trc
+from omnigent.runtime.chat_features import ChatFeature, chat_feature_instructions
 from omnigent.runtime.prompt import ITEM_LABEL_INSTRUCTION
 from omnigent.spec import load_omnigent_yaml
 from omnigent.terminals.ws_common import (
@@ -69,6 +70,9 @@ def _stub_catalog_default(monkeypatch: pytest.MonkeyPatch) -> None:
             model_id=f"catalog-{provider_name}-{family}-default"
         ),
     )
+
+
+(_RUN_COMMANDS_INSTRUCTION,) = chat_feature_instructions({ChatFeature.RUN_COMMANDS})
 
 
 def _test_bridge_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -1689,7 +1693,9 @@ def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_fres
     assert (
         "Claude Code is running in the session terminal" in launch_kwargs["append_system_prompt"]
     )
-    assert launch_kwargs["append_system_prompt"].endswith(f"\n\n{ITEM_LABEL_INSTRUCTION}")
+    assert launch_kwargs["append_system_prompt"].endswith(
+        f"\n\n{ITEM_LABEL_INSTRUCTION}\n\n{_RUN_COMMANDS_INSTRUCTION}"
+    )
 
 
 def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_cold_resume(
@@ -1777,7 +1783,9 @@ def test_run_with_local_server_threads_raw_instructions_to_prepare_terminal_cold
     assert (
         "Claude Code is running in the session terminal" in launch_kwargs["append_system_prompt"]
     )
-    assert launch_kwargs["append_system_prompt"].endswith(f"\n\n{ITEM_LABEL_INSTRUCTION}")
+    assert launch_kwargs["append_system_prompt"].endswith(
+        f"\n\n{ITEM_LABEL_INSTRUCTION}\n\n{_RUN_COMMANDS_INSTRUCTION}"
+    )
 
 
 def test_local_resume_does_not_print_redundant_resume_hint(
@@ -6199,6 +6207,15 @@ async def test_prepare_claude_terminal_cold_resume_injects_external_session_id(
         "_fetch_claude_session_labels",
         _fake_fetch_labels,
     )
+    fetched_features: list[str] = []
+
+    async def _fake_fetch_chat_features(
+        _client: object, session_id: str
+    ) -> frozenset[ChatFeature]:
+        fetched_features.append(session_id)
+        return frozenset()
+
+    monkeypatch.setattr(claude_native, "fetch_session_chat_features", _fake_fetch_chat_features)
     monkeypatch.setattr(
         claude_native,
         "_bind_session_runner",
@@ -6231,7 +6248,7 @@ async def test_prepare_claude_terminal_cold_resume_injects_external_session_id(
             session_bundle=None,
             claude_args=("--print", "hello"),
             command="claude",
-            append_system_prompt="Wrapper bridge instructions.",
+            author_instructions="Wrapper bridge instructions.",
         )
         del http_client  # context-managed by the with block
 
@@ -6249,9 +6266,12 @@ async def test_prepare_claude_terminal_cold_resume_injects_external_session_id(
         "--print",
         "hello",
     )
-    # Cold resume launches a new terminal (no early reattach return), so raw
-    # author instructions must reach --append-system-prompt exactly as given.
-    assert captured_terminal_args["append_system_prompt"] == "Wrapper bridge instructions."
+    # Cold resume launches a new terminal (no early reattach return); with the
+    # session's chat features all off, no feature guidance reaches the flag.
+    assert fetched_features == ["conv_abc"]
+    assert captured_terminal_args["append_system_prompt"] == (
+        f"Wrapper bridge instructions.\n\n{ITEM_LABEL_INSTRUCTION}"
+    )
     assert captured_terminal_args["allowed_tools"] == ()
 
     # Load-bearing for the duplicate-message bug: cold resume
@@ -6317,12 +6337,22 @@ async def test_prepare_claude_terminal_fresh_session_is_not_cold_resumed(
         allowed_tools: tuple[str, ...] = (),
     ) -> str:
         """Return a fixed terminal id without spawning anything."""
-        assert append_system_prompt == "Fresh session bridge instructions."
+        assert append_system_prompt == (
+            "Fresh session bridge instructions.\n\n"
+            f"{ITEM_LABEL_INSTRUCTION}\n\n{_RUN_COMMANDS_INSTRUCTION}"
+        )
         assert allowed_tools == ()
         del _client, _session_id, _claude_args, command, bridge_dir, claude_config
         return "terminal_claude_main"
 
+    async def _fake_fetch_chat_features(
+        _client: object, session_id: str
+    ) -> frozenset[ChatFeature]:
+        assert session_id == "conv_new"
+        return frozenset({ChatFeature.RUN_COMMANDS})
+
     monkeypatch.setattr(claude_native, "_create_claude_session", _fake_create_session)
+    monkeypatch.setattr(claude_native, "fetch_session_chat_features", _fake_fetch_chat_features)
     monkeypatch.setattr(claude_native, "_bind_session_runner", _fake_bind_session_runner)
     monkeypatch.setattr(claude_native, "_launch_claude_terminal", _fake_launch_claude_terminal)
     monkeypatch.setattr(
@@ -6347,7 +6377,7 @@ async def test_prepare_claude_terminal_fresh_session_is_not_cold_resumed(
             session_bundle=b"fake-bundle",
             claude_args=(),
             command="claude",
-            append_system_prompt="Fresh session bridge instructions.",
+            author_instructions="Fresh session bridge instructions.",
         )
         del http_client
 

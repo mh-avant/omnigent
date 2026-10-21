@@ -3,6 +3,8 @@
  * one-tap "Run" that queues each as a `!command` shell input.
  */
 
+import { RUN_COMMANDS_CHAT_FEATURE } from "./chatFeatures";
+
 /** Harnesses whose web composer treats a `!command` message as a shell input. */
 const SHELL_INPUT_HARNESSES = new Set(["claude-native", "codex-native"]);
 
@@ -21,6 +23,20 @@ const PROMPT_PREFIX = /^\$\s+/;
  */
 export function harnessRunsShellCommands(harness: string | null | undefined): boolean {
   return harness != null && SHELL_INPUT_HARNESSES.has(harness);
+}
+
+/**
+ * Whether a session offers Run on suggested commands: its harness takes shell
+ * inputs and the session has the Run-commands chat feature on.
+ *
+ * @param harness - The session harness id, e.g. `"claude-native"`.
+ * @param chatFeatures - The session's enabled chat-feature keys.
+ */
+export function sessionOffersRunCommands(
+  harness: string | null | undefined,
+  chatFeatures: readonly string[],
+): boolean {
+  return harnessRunsShellCommands(harness) && chatFeatures.includes(RUN_COMMANDS_CHAT_FEATURE);
 }
 
 /** The command after a single leading `!`, or null when `line` is not one. */

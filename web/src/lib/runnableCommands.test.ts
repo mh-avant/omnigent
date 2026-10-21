@@ -4,6 +4,7 @@ import {
   extractRunnableCommands,
   harnessRunsShellCommands,
   MAX_RUNNABLE_COMMANDS,
+  sessionOffersRunCommands,
 } from "./runnableCommands";
 
 describe("extractRunnableCommands", () => {
@@ -75,5 +76,14 @@ describe("harnessRunsShellCommands", () => {
     expect(harnessRunsShellCommands("codex-native")).toBe(true);
     expect(harnessRunsShellCommands("claude-sdk")).toBe(false);
     expect(harnessRunsShellCommands(null)).toBe(false);
+  });
+});
+
+describe("sessionOffersRunCommands", () => {
+  it("needs both a shell-input harness and the run_commands feature", () => {
+    expect(sessionOffersRunCommands("claude-native", ["run_commands"])).toBe(true);
+    expect(sessionOffersRunCommands("claude-native", [])).toBe(false);
+    expect(sessionOffersRunCommands("codex-native", ["item_labels"])).toBe(false);
+    expect(sessionOffersRunCommands("claude-sdk", ["run_commands"])).toBe(false);
   });
 });

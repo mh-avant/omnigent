@@ -246,6 +246,7 @@ def _to_conversation(
         provider_override=overrides["provider_override"],
         # Stored as ``"on"`` / absent; surfaced as a plain bool on the entity.
         share_workspace_files=overrides["share_workspace_files"] == "on",
+        chat_features_override=overrides["chat_features"],
         sub_agent_name=meta.sub_agent_name if meta else None,
         task_summary=meta.task_summary if meta else None,
         external_session_id=meta.external_session_id if meta else None,
@@ -1003,6 +1004,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         subagent_routing_override: str | None = None,
         harness_override: str | None = None,
         provider_override: str | None = None,
+        chat_features_override: str | None = None,
     ) -> Conversation:
         """
         Create a new conversation in the database.
@@ -1051,6 +1053,9 @@ class SqlAlchemyConversationStore(ConversationStore):
             terminal.
         :param conversation_id: Optional caller-supplied identifier.
             ``None`` generates a new random id.
+        :param chat_features_override: Encoded enabled chat features, e.g.
+            ``"run_commands"``; ``""`` stores an empty set. ``None`` leaves it
+            unset, which reads back as the defaults.
         :returns: The newly created :class:`Conversation`.
         :raises NameAlreadyExistsError: If
             ``parent_conversation_id`` is set and a sibling row
@@ -1084,6 +1089,7 @@ class SqlAlchemyConversationStore(ConversationStore):
                 "subagent_routing_override": subagent_routing_override,
                 "harness_override": harness_override,
                 "provider_override": provider_override,
+                "chat_features": chat_features_override,
             }
         )
         prepared_labels = _prepare_label_updates(labels) if labels else {}
@@ -3526,6 +3532,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         _unset_subagent_routing_override: bool = False,
         harness_override: str | None = None,
         _unset_harness_override: bool = False,
+        chat_features_override: str | None = None,
         share_workspace_files: bool | None = None,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
@@ -3564,6 +3571,8 @@ class SqlAlchemyConversationStore(ConversationStore):
         :param _unset_harness_override: When ``True``, clear
             ``harness_override`` to ``None`` (used to replace the
             ``"auto"`` sentinel after first-message routing resolves).
+        :param chat_features_override: Encoded enabled chat features, e.g.
+            ``"run_commands"``; ``""`` disables all. ``None`` leaves unchanged.
         :param share_workspace_files: Whether view-level collaborators may
             browse the workspace. ``True`` stores the share flag, ``False``
             clears it (back to edit-only), ``None`` leaves it unchanged.
@@ -3643,6 +3652,9 @@ class SqlAlchemyConversationStore(ConversationStore):
                 overrides_changed = True
             elif harness_override is not None:
                 overrides["harness_override"] = harness_override
+                overrides_changed = True
+            if chat_features_override is not None:
+                overrides["chat_features"] = chat_features_override
                 overrides_changed = True
             # Two-state flag: True stores ``"on"``, False clears it (edit-only
             # again), None leaves it untouched.
@@ -3739,6 +3751,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         _unset_subagent_routing_override: bool = False,
         harness_override: str | None = None,
         _unset_harness_override: bool = False,
+        chat_features_override: str | None = None,
         share_workspace_files: bool | None = None,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
@@ -3758,6 +3771,7 @@ class SqlAlchemyConversationStore(ConversationStore):
             _unset_subagent_routing_override=_unset_subagent_routing_override,
             harness_override=harness_override,
             _unset_harness_override=_unset_harness_override,
+            chat_features_override=chat_features_override,
             share_workspace_files=share_workspace_files,
             terminal_launch_args=terminal_launch_args,
             archived=archived,
@@ -4469,6 +4483,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         host_id: str | None = None,
         inference_snapshot: dict[str, Any] | None = None,
         created_by: str | None = None,
+        chat_features_override: str | None = None,
     ) -> CreatedSession:
         """
         Insert a conversation row and session-scoped agent.
@@ -4521,6 +4536,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         :param created_by: Identity of the creating user, recorded on the
             session-scoped agent so its code can only be mutated by the
             owner. ``None`` in single-user mode.
+        :param chat_features_override: Optional encoded enabled chat features.
         :returns: A :class:`CreatedSession` with both entities.
         :raises ConversationNotFoundError: If
             ``parent_conversation_id`` is set but no such
@@ -4544,6 +4560,7 @@ class SqlAlchemyConversationStore(ConversationStore):
             host_id=host_id,
             inference_snapshot=inference_snapshot,
             created_by=created_by,
+            chat_features_override=chat_features_override,
         )
 
     def _create_session_with_agent_with_id(
@@ -4566,6 +4583,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         host_id: str | None = None,
         inference_snapshot: dict[str, Any] | None = None,
         created_by: str | None = None,
+        chat_features_override: str | None = None,
     ) -> CreatedSession:
         """Body of :meth:`create_session_with_agent` under a caller-supplied
         ``conversation_id``. The public method generates a fresh id; this seam
@@ -4577,6 +4595,7 @@ class SqlAlchemyConversationStore(ConversationStore):
             {
                 "reasoning_effort": reasoning_effort,
                 "model_override": model_override,
+                "chat_features": chat_features_override,
             }
         )
         encoded_inference_snapshot = (
@@ -4919,6 +4938,7 @@ class SqlAlchemyConversationStore(ConversationStore):
             # — same gate — harness_override) copy only when copy_model_settings.
             # The routing switches (cost_control_mode_override,
             # subagent_routing_override) are intentionally never carried onto a fork.
+            # Chat features always carry over: they shape the transcript, not the model.
             # An explicit dialog pick (override_*_set) supersedes the inherited
             # value — the fork dialog seeds the picker from the source, so an
             # untouched picker sends nothing and inheritance stands.
@@ -4942,6 +4962,7 @@ class SqlAlchemyConversationStore(ConversationStore):
                     "provider_override": (
                         source_overrides["provider_override"] if copy_model_settings else None
                     ),
+                    "chat_features": source_overrides["chat_features"],
                 }
             )
             new_conv_values: dict[str, Any] = {

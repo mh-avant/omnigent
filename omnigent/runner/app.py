@@ -199,6 +199,11 @@ from omnigent.runner.subagent_work import (
     unregister_subagent_work_for_session,
     wrapper_label_from_labels,
 )
+from omnigent.runtime.chat_features import (
+    DEFAULT_CHAT_FEATURES,
+    ChatFeature,
+    chat_features_from_wire,
+)
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager, NoLiveHarnessError
 from omnigent.runtime.prompt import (
     build_instructions,
@@ -459,6 +464,25 @@ def _input_stable_id(source: Mapping[str, object]) -> str | None:
     value = source.get("input_stable_id") or source.get("stable_id")
     validated = input_attributes({"input_stable_id": value}).get("input_stable_id")
     return validated if isinstance(validated, str) else None
+
+
+def _resolve_turn_chat_features(
+    session_chat_features: dict[str, frozenset[ChatFeature]],
+    conv: str,
+    msg_body: Mapping[str, object],
+) -> frozenset[ChatFeature]:
+    """Resolve a turn's chat features and remember the body's set for the session.
+
+    :param session_chat_features: Per-session cache, updated in place.
+    :param conv: Session/conversation id.
+    :param msg_body: The forwarded turn body; an older server omits the key.
+    :returns: The body's set, else the cached set, else the defaults.
+    """
+    if "chat_features" in msg_body:
+        features = chat_features_from_wire(msg_body["chat_features"])
+        session_chat_features[conv] = features
+        return features
+    return session_chat_features.get(conv, DEFAULT_CHAT_FEATURES)
 
 
 def _response_body_preview(resp: object, *, limit: int = 500) -> str:
@@ -1285,6 +1309,9 @@ def create_runner_app(
     # snapshot and updated by ``effort_change``. In-process harnesses learn the
     # effort only from the forwarded turn body, which is built field by field.
     _session_reasoning_effort: dict[str, str] = {}
+    # session_id → enabled chat features, seeded from the session-init snapshot
+    # and refreshed by every forwarded turn body, so a PATCH applies next turn.
+    _session_chat_features: dict[str, frozenset[ChatFeature]] = {}
     _session_skills_cache: dict[str, tuple[float, list[SkillSpec]]] = {}
     _session_workspace_cache: dict[str, str | None] = {}  # session_id → workspace path
     _session_cursor_model_names: dict[str, dict[str, str]] = {}
@@ -2129,6 +2156,7 @@ def create_runner_app(
             _session_sub_agent_names[session_id] = envelope.sub_agent_name
         if snapshot.reasoning_effort:
             _session_reasoning_effort[session_id] = snapshot.reasoning_effort
+        _session_chat_features[session_id] = _native_runtime._session_init_chat_features(envelope)
         _session_init_envelopes[session_id] = (time.monotonic(), envelope)
         return _SessionInitContext(envelope=envelope)
 
@@ -3477,6 +3505,7 @@ def create_runner_app(
         _session_snapshot_locks.pop(session_id, None)
         _session_init_envelopes.pop(session_id, None)
         _session_reasoning_effort.pop(session_id, None)
+        _session_chat_features.pop(session_id, None)
         _session_spec_locks.pop(session_id, None)
         _session_fs_registries.pop(session_id, None)
         _session_agent_ids.pop(session_id, None)
@@ -4943,6 +4972,15 @@ def create_runner_app(
                 if _active_turns.get(conv) is _own_task and _own_task is not None:
                     _on_proxy_stream_end(conv)
 
+    def _turn_chat_features(conv: str, msg_body: _JsonObject) -> frozenset[ChatFeature]:
+        """Chat features for a turn: the body's set, else the session's last known.
+
+        :param conv: Session/conversation id.
+        :param msg_body: The forwarded turn body.
+        :returns: The enabled features; the defaults when neither wire has them.
+        """
+        return _resolve_turn_chat_features(_session_chat_features, conv, msg_body)
+
     def _turn_reasoning(conv: str, msg_body: _JsonObject) -> _JsonObject | None:
         """Reasoning block to forward on a turn, or ``None`` when unset.
 
@@ -5066,15 +5104,20 @@ def create_runner_app(
             )
             # Gated harnesses use nullable to avoid the fallback literal.
             _authored_bg = raw_author_instructions(cached_spec) is not None
+            _bg_chat_features = _turn_chat_features(conv, msg_body)
             if harness_name in _GATED_COMPOSED_INSTRUCTION_HARNESSES:
                 instructions = build_instructions_nullable(
-                    cached_spec, _raw_per_request_instructions, []
+                    cached_spec,
+                    _raw_per_request_instructions,
+                    [],
+                    chat_features=_bg_chat_features,
                 )
             else:
                 instructions = build_instructions(
                     cached_spec,
                     _raw_per_request_instructions,
                     [],
+                    chat_features=_bg_chat_features,
                 )
             # Warn once per (conversation, harness, delivery) if the agent has
             # authored instructions but the harness can't deliver them.
@@ -5746,10 +5789,14 @@ def create_runner_app(
                     if _instr_spec_ds is not None:
                         _per_req_instr = cast(str | None, body.get("instructions"))
                         _authored_ds = raw_author_instructions(_instr_spec_ds) is not None
+                        _ds_chat_features = _turn_chat_features(conv_id, body)
                         _ic_ds = InstructionComposition(
                             authored_present=_authored_ds,
                             composed=build_instructions_nullable(
-                                _instr_spec_ds, _per_req_instr, []
+                                _instr_spec_ds,
+                                _per_req_instr,
+                                [],
+                                chat_features=_ds_chat_features,
                             ),
                         )
                         # Gated harnesses get nullable — skip the fallback literal.
@@ -5761,7 +5808,10 @@ def create_runner_app(
                             _instr_body = {
                                 **body,
                                 "instructions": build_instructions(
-                                    _instr_spec_ds, _per_req_instr, []
+                                    _instr_spec_ds,
+                                    _per_req_instr,
+                                    [],
+                                    chat_features=_ds_chat_features,
                                 ),
                             }
                         if _authored_ds and harness_name:

@@ -6195,6 +6195,46 @@ describe("Composer config gear", () => {
     expect(setCostControlMode).toHaveBeenCalledWith("off");
   });
 
+  it.each([
+    { sessionHarness: "claude-native", restartNote: true },
+    { sessionHarness: "claude-sdk", restartNote: false },
+  ])(
+    "toggles a chat feature for the session ($sessionHarness)",
+    async ({ sessionHarness, restartNote }) => {
+      const setChatFeatures = vi.fn().mockResolvedValue(undefined);
+      useChatStore.setState({ setChatFeatures, sessionHarness, chatFeatures: ["run_commands"] });
+      renderWithTooltips(
+        <Composer
+          {...composerProps({
+            showModels: true,
+            modelPickerKind: "claude",
+            chatFeatureCatalog: [
+              { key: "run_commands", title: "Run suggested commands", description: "Run button" },
+            ],
+          })}
+        />,
+      );
+      await openSessionModels();
+      const section = within(await screen.findByTestId("composer-agent-chat-features"));
+      const choice = section.getByRole("menuitemcheckbox", { name: "Run suggested commands" });
+      expect(choice).toHaveAttribute("aria-checked", "true");
+      expect(section.queryByText("Applies to the agent after the session restarts.") !== null).toBe(
+        restartNote,
+      );
+
+      fireEvent.click(choice);
+      await waitFor(() => expect(setChatFeatures).toHaveBeenCalledExactlyOnceWith([]));
+    },
+  );
+
+  it("omits the Chat features section without a catalog", async () => {
+    renderWithTooltips(
+      <Composer {...composerProps({ showModels: true, modelPickerKind: "claude" })} />,
+    );
+    await openSessionModels();
+    expect(screen.queryByTestId("composer-agent-chat-features")).toBeNull();
+  });
+
   it("keeps Claude models in the primary picker alongside Smart Routing", async () => {
     renderWithTooltips(
       <Composer

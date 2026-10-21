@@ -96,7 +96,10 @@ from omnigent.runner.mcp_execution_registry import (
     RUNNER_MCP_EXECUTION_DETACHED_MESSAGE,
 )
 from omnigent.runner.routing import RunnerRouter
-from omnigent.runner.session_init_protocol import build_runner_session_init_payload
+from omnigent.runner.session_init_protocol import (
+    build_runner_session_init_payload,
+    chat_feature_keys,
+)
 from omnigent.runner.subagent_routing import (
     ROUTING_DECISION_LABEL_KEY,
     auto_harness_session,
@@ -112,6 +115,7 @@ from omnigent.runtime import (
     pending_inputs,
 )
 from omnigent.runtime.agent_cache import AgentCache
+from omnigent.runtime.chat_features import encode_chat_features
 from omnigent.runtime.policies.approval import (
     build_elicitation_request_event,
     resolve_ask_timeout,
@@ -364,6 +368,10 @@ from omnigent.server.routes._sessions.helpers import (
     _validated_subagent_routing_override,
     _wait_for_managed_runner_tunnel,
     _wait_for_runner_client,
+)
+from omnigent.server.routes.preferences import (
+    parse_requested_chat_features,
+    resolve_new_session_chat_features,
 )
 from omnigent.server.runner_session_init import RunnerSessionInitializer
 from omnigent.server.schemas import (
@@ -1506,6 +1514,7 @@ def _build_session_response(
         cost_control_mode_override=conv.cost_control_mode_override,
         subagent_routing_override=conv.subagent_routing_override,
         share_workspace_files=conv.share_workspace_files,
+        chat_features=chat_feature_keys(conv.chat_features_override),
         context_window=context_window,
         last_total_tokens=last_total_tokens,
         # Seed the client's cost indicator on resume. Uses the SUBTREE
@@ -7360,6 +7369,8 @@ async def _forward_event_to_runner(
     # raw dict (extra keys ignored) and the value never changes after create.
     if conv.reasoning_effort is not None:
         runner_body["reasoning"] = {"effort": conv.reasoning_effort}
+    # Read per turn so a PATCH reaches SDK harnesses' next prompt.
+    runner_body["chat_features"] = chat_feature_keys(conv.chat_features_override)
     # Per-session brain-harness override — create-time only, so no
     # per-event value exists; the persisted column is the source.
     # _routed_harness is non-None when the child routing path resolved one
@@ -11361,6 +11372,11 @@ async def _create_session_from_existing_agent(
     subagent_routing_override = _validated_subagent_routing_override(
         body.subagent_routing_override
     )
+    requested_chat_features = (
+        parse_requested_chat_features(body.chat_features)
+        if body.chat_features is not None
+        else None
+    )
 
     # A child of an auto-harness parent whose subagent-routing switch is on is
     # routed regardless of the harness/model the orchestrator chose: force the
@@ -11833,6 +11849,18 @@ async def _create_session_from_existing_agent(
             agent_for_user, agent_store, artifact_store, agent, user_id
         )
 
+    chat_features_override = encode_chat_features(
+        await resolve_new_session_chat_features(
+            requested_chat_features,
+            user_id=user_id,
+            app_state=request.app.state,
+            parent_chat_features_override=(
+                _parent_for_routing.chat_features_override if _parent_for_routing else None
+            ),
+            has_parent=body.parent_session_id is not None,
+        )
+    )
+
     try:
         # Include spec-seeded defaults before create; overflow must not leave a session.
         encode_session_overrides(
@@ -11843,6 +11871,7 @@ async def _create_session_from_existing_agent(
                 "subagent_routing_override": subagent_routing_override,
                 "harness_override": harness_override,
                 "provider_override": provider_override,
+                "chat_features": chat_features_override,
             }
         )
         with creation_stage("create_persistence_ms"):
@@ -11865,6 +11894,7 @@ async def _create_session_from_existing_agent(
                 subagent_routing_override=subagent_routing_override,
                 harness_override=harness_override,
                 provider_override=provider_override,
+                chat_features_override=chat_features_override,
                 **snapshot_kwargs,
             )
     except NameAlreadyExistsError as exc:

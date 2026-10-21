@@ -278,6 +278,8 @@ let sessionPendingInputs: Map<
 // absent key = unset (the wire field comes back null).
 let sessionCostControlOverrides: Map<string, "on" | "off">;
 let sessionSubagentRoutingOverrides: Map<string, "on" | "off">;
+// Per-session chat features; absent key = the wire field is omitted.
+let sessionChatFeatures: Map<string, string[]>;
 // Per-session labels the snapshot/PATCH handlers serve.
 let sessionLabels: Map<string, Record<string, string>>;
 // Per-session MCP startup map the GET snapshot handler serves; absent key =
@@ -353,6 +355,7 @@ function defaultFetchHandler(input: RequestInfo | URL, init?: RequestInit): Resp
           runner_id?: string;
           cost_control_mode_override?: "on" | "off" | null;
           subagent_routing_override?: "on" | "off" | null;
+          chat_features?: string[] | null;
           collaboration_mode?: string;
           approval_mode?: string;
         })
@@ -374,6 +377,9 @@ function defaultFetchHandler(input: RequestInfo | URL, init?: RequestInit): Resp
         sessionSubagentRoutingOverrides.set(sessionId, body.subagent_routing_override);
       }
     }
+    if (Array.isArray(body.chat_features)) {
+      sessionChatFeatures.set(sessionId, body.chat_features);
+    }
     if ("collaboration_mode" in body && typeof body.collaboration_mode === "string") {
       labels["omnigent.codex_native.collaboration_mode"] = body.collaboration_mode;
       sessionLabels.set(sessionId, labels);
@@ -392,6 +398,9 @@ function defaultFetchHandler(input: RequestInfo | URL, init?: RequestInit): Resp
       labels,
       cost_control_mode_override: sessionCostControlOverrides.get(sessionId) ?? null,
       subagent_routing_override: sessionSubagentRoutingOverrides.get(sessionId) ?? null,
+      ...(sessionChatFeatures.has(sessionId)
+        ? { chat_features: sessionChatFeatures.get(sessionId) }
+        : {}),
     });
   }
   if (snapshotMatch && (init?.method ?? "GET") === "GET") {
@@ -407,6 +416,9 @@ function defaultFetchHandler(input: RequestInfo | URL, init?: RequestInit): Resp
       pending_inputs: sessionPendingInputs.get(sessionId) ?? [],
       cost_control_mode_override: sessionCostControlOverrides.get(sessionId) ?? null,
       subagent_routing_override: sessionSubagentRoutingOverrides.get(sessionId) ?? null,
+      ...(sessionChatFeatures.has(sessionId)
+        ? { chat_features: sessionChatFeatures.get(sessionId) }
+        : {}),
       mcp_startup: sessionMcpStartup.get(sessionId) ?? null,
       terminal_pending: sessionTerminalPending.get(sessionId) ?? false,
     });
@@ -510,6 +522,7 @@ beforeEach(() => {
   sessionPendingInputs = new Map();
   sessionCostControlOverrides = new Map();
   sessionSubagentRoutingOverrides = new Map();
+  sessionChatFeatures = new Map();
   sessionLabels = new Map();
   sessionMcpStartup = new Map();
   sessionTerminalPending = new Map();
@@ -16883,6 +16896,58 @@ describe("chatStore — setProvider", () => {
       "claude-max2 needs a new session",
     );
     expect(providerOverride() ?? null).toBeNull();
+  });
+});
+
+describe("chatStore — setChatFeatures", () => {
+  function patchBodies(sessionId: string): unknown[] {
+    return fetchMock.mock.calls
+      .filter(([u, init]) => {
+        const url = typeof u === "string" ? u : (u as URL | Request).toString();
+        return (
+          url === `/v1/sessions/${sessionId}` &&
+          (init as RequestInit | undefined)?.method === "PATCH"
+        );
+      })
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+  }
+
+  it("optimistically writes, PATCHes chat_features, and keeps the server's set", async () => {
+    seedSession("conv_cf", []);
+    await useChatStore.getState().switchTo("conv_cf");
+    // A server that sends no chat_features reads as every feature on.
+    expect(useChatStore.getState().chatFeatures).toEqual(["run_commands"]);
+
+    const settled = useChatStore.getState().setChatFeatures([]);
+    expect(useChatStore.getState().chatFeatures).toEqual([]);
+    await settled;
+
+    expect(patchBodies("conv_cf")).toEqual([{ chat_features: [] }]);
+    expect(useChatStore.getState().chatFeatures).toEqual([]);
+  });
+
+  it("rolls back the optimistic write when the PATCH fails", async () => {
+    seedSession("conv_cf2", []);
+    await useChatStore.getState().switchTo("conv_cf2");
+
+    fetchMock.mockImplementationOnce((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/v1/sessions/conv_cf2" && init?.method === "PATCH") {
+        return mockResponse({ error: { message: "boom" } }, { ok: false, status: 500 });
+      }
+      return defaultFetchHandler(input, init);
+    });
+
+    await expect(useChatStore.getState().setChatFeatures([])).rejects.toThrow();
+    expect(useChatStore.getState().chatFeatures).toEqual(["run_commands"]);
+  });
+
+  it("hydrates from the session snapshot on bind", async () => {
+    seedSession("conv_cf3", []);
+    sessionChatFeatures.set("conv_cf3", []);
+
+    await useChatStore.getState().switchTo("conv_cf3");
+    expect(useChatStore.getState().chatFeatures).toEqual([]);
   });
 });
 

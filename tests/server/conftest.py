@@ -49,6 +49,7 @@ from omnigent.stores.conversation_store.sqlalchemy_store import (
 from omnigent.stores.file_store.sqlalchemy_store import SqlAlchemyFileStore
 from omnigent.stores.permission_store.sqlalchemy_store import SqlAlchemyPermissionStore
 from omnigent.stores.policy_store.sqlalchemy_store import SqlAlchemyPolicyStore
+from omnigent.stores.preference_store import PreferenceStore
 
 # ── Controllable mock LLM ─────────────────────────────
 
@@ -602,7 +603,18 @@ def _first_party_origin_on_asgi(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def app(runtime_init: None, db_uri: str, tmp_path: Path) -> FastAPI:
+def server_preference_store() -> PreferenceStore | None:
+    """Shared-preference store for :func:`app`; ``None`` leaves the opt-in API off."""
+    return None
+
+
+@pytest.fixture()
+def app(
+    runtime_init: None,
+    db_uri: str,
+    tmp_path: Path,
+    server_preference_store: PreferenceStore | None,
+) -> FastAPI:
     """
     Build the FastAPI app with real stores and real workflow
     execution (mock LLM is patched in via runtime_init fixture).
@@ -615,6 +627,7 @@ def app(runtime_init: None, db_uri: str, tmp_path: Path) -> FastAPI:
         patches the mock LLM.
     :param db_uri: SQLite database URI.
     :param tmp_path: Pytest temp directory for artifacts and cache.
+    :param server_preference_store: Optional shared-preference store.
     """
     artifact_store = LocalArtifactStore(str(tmp_path / "artifacts"))
     agent_store = SqlAlchemyAgentStore(db_uri)
@@ -630,6 +643,7 @@ def app(runtime_init: None, db_uri: str, tmp_path: Path) -> FastAPI:
             cache_dir=tmp_path / "cache",
         ),
         comment_store=SqlAlchemyCommentStore(db_uri),
+        preference_store=server_preference_store,
     )
 
 

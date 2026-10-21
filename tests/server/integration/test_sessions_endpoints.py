@@ -2497,6 +2497,7 @@ async def test_skill_slash_command_persists_visible_item_and_hidden_meta_message
             # The forwarded message is the meta item; its store id lets the
             # runner dedup it on a cold-cache history reload.
             "persisted_item_id": meta["id"],
+            "chat_features": ["run_commands"],
         }
     ]
     event_types = [event["type"] for _, event in published]

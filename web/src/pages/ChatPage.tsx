@@ -125,7 +125,7 @@ import {
 } from "@/lib/sideChat";
 import { shouldQueueSend } from "@/lib/messageQueue";
 import { readAlwaysSteer } from "@/lib/alwaysSteerPreferences";
-import { harnessRunsShellCommands } from "@/lib/runnableCommands";
+import { sessionOffersRunCommands } from "@/lib/runnableCommands";
 import { skillInvocationPrefix } from "@/lib/harnessSetup";
 import { DEVIN_NATIVE_PERMISSION_MODES } from "@/lib/nativeHarnessModes";
 import { readSubmitWithModEnter } from "@/lib/composerSendShortcutPreferences";
@@ -244,6 +244,9 @@ import {
 import { useHostModelOptions, useHosts } from "@/hooks/useHosts";
 import { nativeModelLabel } from "@/components/HarnessConfigControls";
 import { ComposerConfigSections } from "@/components/composer/ComposerConfigSections";
+import { buildChatFeatureSections } from "@/components/composer/chatFeatureSections";
+import { useChatFeatureCatalog } from "@/hooks/useChatFeaturePreferences";
+import { type ChatFeatureDefinition, chatFeaturesApplyOnRestart } from "@/lib/chatFeatures";
 import { buildFusionSections } from "@/components/composer/fusionSections";
 import { fusionOption, isFusionModelUid } from "@/lib/devinFusion";
 import { ComposerWorkspaceStatus } from "@/components/composer/ComposerWorkspaceStatus";
@@ -286,6 +289,8 @@ import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
 import { ConnectionIndicator } from "./ChatIndicators";
 import { RunCommandsProvider } from "@/components/chat/RunCommandsProvider";
 import { Transcript } from "@/components/chat/Transcript";
+
+const NO_CHAT_FEATURES: readonly ChatFeatureDefinition[] = [];
 
 /** Server-info as consumers see it: the probe's result, or "loading". */
 type ServerInfoValue = ServerInfo | "loading";
@@ -690,6 +695,7 @@ export function ChatPage() {
     activeSession ?? optimisticRoutingSession,
     sessionHost,
   );
+  const chatFeatureCatalog = useChatFeatureCatalog().data ?? NO_CHAT_FEATURES;
   // Sub-agent routing is a separate knob with a different gate: a native CLI
   // can't per-turn route itself, but the sub-agents it spawns are routed per
   // spawn — where the launch actually installed that apparatus. See
@@ -1204,6 +1210,7 @@ export function ChatPage() {
       showClaudeGoalControl={shouldShowPollyClaudeGoalControl(activeSession)}
       showPollyCodexGoalControl={shouldShowPollyCodexGoalControl(activeSession)}
       costRoutingEligible={costRoutingEligible}
+      chatFeatureCatalog={chatFeatureCatalog}
       subagentRoutingEligible={subagentRoutingEligible}
       subAgentLabel={subAgentLabel}
       wrapperLabel={capabilitySource.labels[WRAPPER_LABEL_KEY] ?? null}
@@ -1370,6 +1377,8 @@ interface MainAgentSurfaceProps {
   showPollyCodexGoalControl?: boolean;
   /** Session passes `isCostRoutingSession` (polly orchestrator, not a child). */
   costRoutingEligible: boolean;
+  /** The server's chat-feature catalog, for the configure menu. */
+  chatFeatureCatalog: readonly ChatFeatureDefinition[];
   /** Session passes `isSubagentRoutingSession` (top-level, native Claude/Codex or non-native). */
   subagentRoutingEligible: boolean;
   /**
@@ -1518,6 +1527,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
   showClaudeGoalControl = false,
   showPollyCodexGoalControl = false,
   costRoutingEligible,
+  chatFeatureCatalog,
   subagentRoutingEligible,
   subAgentLabel,
   wrapperLabel,
@@ -1556,6 +1566,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
   // Cold selector (harness rarely changes) — gates the selection popup's "Ask
   // in side chat" action to harnesses that support side chat.
   const selectionSessionHarness = useChatStore((s) => s.sessionHarness);
+  const sessionChatFeatures = useChatStore((s) => s.chatFeatures);
 
   // Ref forwarded to SelectionPopup to scope selection detection to the
   // conversation area, preventing selections in the composer from triggering
@@ -1774,7 +1785,11 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
           subscription and the bubble pipeline, so an SSE frame re-renders it
           alone — this surface's composer and chrome below bail out. */}
           <RunCommandsProvider
-            onRun={harnessRunsShellCommands(selectionSessionHarness) ? onRunCommands : null}
+            onRun={
+              sessionOffersRunCommands(selectionSessionHarness, sessionChatFeatures)
+                ? onRunCommands
+                : null
+            }
           >
             <Transcript
               hostId={hostId}
@@ -1844,6 +1859,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
             }
             onShowReconnectHelp={onShowReconnectHelp}
             costRoutingEligible={costRoutingEligible}
+            chatFeatureCatalog={chatFeatureCatalog}
             subagentRoutingEligible={subagentRoutingEligible}
             subAgentLabel={subAgentLabel}
             wrapperLabel={wrapperLabel}
@@ -1995,6 +2011,8 @@ interface ComposerProps {
   onShowReconnectHelp?: () => void;
   /** Session passes `isCostRoutingSession` (polly orchestrator, not a child); see that predicate. */
   costRoutingEligible?: boolean;
+  /** The server's chat-feature catalog; empty hides the Chat features section. */
+  chatFeatureCatalog?: readonly ChatFeatureDefinition[];
   /**
    * Session passes `isSubagentRoutingSession` — a top-level session that gets
    * the gear modal's "Subagent routing" row. Wider than `costRoutingEligible`:
@@ -2310,6 +2328,7 @@ function ComposerImpl(
     unreachable = false,
     onShowReconnectHelp,
     costRoutingEligible = false,
+    chatFeatureCatalog = NO_CHAT_FEATURES,
     subAgentLabel = null,
     wrapperLabel = null,
     onViewportShrinkPinScroll,
@@ -4088,6 +4107,7 @@ function ComposerImpl(
                   modelLabelOptions={modelLabelOptions}
                   modelLabelHostId={composerSession?.hostId}
                   costRoutingEligible={costRoutingEligible}
+                  chatFeatureCatalog={chatFeatureCatalog}
                   // Config changes persist server-side and apply on the next
                   // wake/turn (the runner forward is best-effort), so the gear
                   // stays live wherever a message could be sent — including
@@ -4751,6 +4771,7 @@ function SessionHarnessPicker({
   modelLabelOptions,
   modelLabelHostId,
   costRoutingEligible,
+  chatFeatureCatalog,
   disabled,
   openNonce = 0,
 }: {
@@ -4770,6 +4791,7 @@ function SessionHarnessPicker({
   modelLabelOptions: readonly NativeModelOption[];
   modelLabelHostId: string | null | undefined;
   costRoutingEligible: boolean;
+  chatFeatureCatalog: readonly ChatFeatureDefinition[];
   disabled: boolean;
   openNonce?: number;
 }) {
@@ -4785,6 +4807,7 @@ function SessionHarnessPicker({
   const selectedEffort = useSessionEffort();
   const costControlModeOverride = useChatStore((state) => state.costControlModeOverride);
   const routingOn = costRoutingEligible && costControlModeOverride === "on";
+  const sessionChatFeatures = useChatStore((state) => state.chatFeatures);
   const {
     effectiveModel,
     modelLabel,
@@ -5040,6 +5063,15 @@ function SessionHarnessPicker({
               })
             : []),
           ...(accountSection ? [accountSection] : []),
+          ...buildChatFeatureSections({
+            catalog: chatFeatureCatalog,
+            enabled: sessionChatFeatures,
+            testIdPrefix: "composer-agent",
+            onChange: (features) =>
+              void apply(() => useChatStore.getState().setChatFeatures(features)),
+            showRestartNote: chatFeaturesApplyOnRestart(sessionHarness),
+            disabled: busy || pendingModelChange !== null,
+          }),
         ]}
       />
     </>

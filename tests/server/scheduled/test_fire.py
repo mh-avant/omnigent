@@ -644,6 +644,41 @@ async def test_unset_permission_mode_sends_no_launch_args() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fired_session_stores_the_owners_default_chat_features(db_uri: str) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from omnigent.preference_sync import PreferenceMutation
+    from omnigent.stores.preference_store.sqlalchemy_store import SqlAlchemyPreferenceStore
+
+    task = _task()
+    preference_store = SqlAlchemyPreferenceStore(db_uri, authority_id="test-authority")
+    preference_store.apply(
+        PreferenceMutation(
+            protocol_version=1,
+            identity=preference_store.identity(task.user_id),
+            operation_id=uuid4(),
+            installation_id="browser",
+            key={"kind": "chat_features", "name": "default"},
+            expected_version=0,
+            value=[],
+        ),
+        user_id=task.user_id,
+    )
+    conv_store = FakeConversationStore()
+    deps = _deps(FakeScheduledTaskStore(rows={"task_1": task}), conversation_store=conv_store)
+    deps.app_state = SimpleNamespace(preference_store=preference_store)
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    await build_on_fire(deps, launch_dispatch=_launch)(0, "task_1")
+    await _drain()
+
+    assert conv_store.created[0]["chat_features_override"] == ""
+
+
+@pytest.mark.asyncio
 async def test_permission_mode_omitted_for_non_claude_agent() -> None:
     """A mis-stamped non-Claude row degrades to no --permission-mode flag.
 

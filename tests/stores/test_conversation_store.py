@@ -194,6 +194,7 @@ def test_create_persists_initial_labels_and_overrides(
         cost_control_mode_override="on",
         subagent_routing_override="off",
         harness_override="codex-native",
+        chat_features_override="",
     )
 
     assert created.labels == {
@@ -206,6 +207,8 @@ def test_create_persists_initial_labels_and_overrides(
     assert created.cost_control_mode_override == "on"
     assert created.subagent_routing_override == "off"
     assert created.harness_override == "codex-native"
+    # An empty set is stored, not dropped like an unset override.
+    assert created.chat_features_override == ""
 
     fetched = conversation_store.get_conversation(created.id)
     assert fetched is not None
@@ -215,6 +218,27 @@ def test_create_persists_initial_labels_and_overrides(
     assert fetched.cost_control_mode_override == "on"
     assert fetched.subagent_routing_override == "off"
     assert fetched.harness_override == "codex-native"
+    assert fetched.chat_features_override == ""
+
+
+def test_update_chat_features_override_keeps_sibling_overrides(
+    conversation_store: SqlAlchemyConversationStore,
+) -> None:
+    """A legacy row reads as unset; updates replace only the chat-features key."""
+    created = conversation_store.create_conversation(model_override="model-a")
+    assert created.chat_features_override is None
+
+    conversation_store.update_conversation(created.id, chat_features_override="run_commands")
+    conversation_store.update_conversation(created.id, title="renamed")
+    fetched = conversation_store.get_conversation(created.id)
+    assert fetched is not None
+    assert fetched.chat_features_override == "run_commands"
+    assert fetched.model_override == "model-a"
+
+    conversation_store.update_conversation(created.id, chat_features_override="")
+    fetched = conversation_store.get_conversation(created.id)
+    assert fetched is not None
+    assert fetched.chat_features_override == ""
 
 
 def test_set_provider_override_keeps_the_other_overrides(
@@ -6068,7 +6092,10 @@ def test_fork_conversation_copy_model_settings_false_resets(
     )
     source = conversation_store.create_conversation(agent_id="6bfca10f1de66d54bdff530d697d1b68")
     conversation_store.update_conversation(
-        source.id, reasoning_effort="high", model_override="claude-opus-4"
+        source.id,
+        reasoning_effort="high",
+        model_override="claude-opus-4",
+        chat_features_override="",
     )
 
     fork = conversation_store.fork_conversation(source.id, copy_model_settings=False)
@@ -6083,6 +6110,8 @@ def test_fork_conversation_copy_model_settings_false_resets(
     assert reloaded.reasoning_effort is None, (
         "copy_model_settings=False must drop the source's reasoning_effort"
     )
+    # Chat features are not model settings: they copy either way.
+    assert reloaded.chat_features_override == ""
 
     # Control: the default still copies, proving the reset is gated on the
     # flag and not a blanket drop.
@@ -6091,6 +6120,7 @@ def test_fork_conversation_copy_model_settings_false_resets(
     assert reloaded_default is not None
     assert reloaded_default.model_override == "claude-opus-4"
     assert reloaded_default.reasoning_effort == "high"
+    assert reloaded_default.chat_features_override == ""
 
 
 def test_fork_conversation_carry_history_into_native_stamps_label(

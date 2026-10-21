@@ -24,6 +24,9 @@ _SESSION_OVERRIDE_KEYS = (
     # Stored as the string ``"on"`` when the owner shares workspace files
     # with view-level collaborators; absent (SQL NULL blob key) otherwise.
     "share_workspace_files",
+    # Comma-joined enabled chat-feature keys; ``""`` means all disabled and
+    # absent means a session created before the setting existed.
+    "chat_features",
 )
 
 

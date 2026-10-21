@@ -101,13 +101,14 @@ from omnigent.native.native_terminal import (
 from omnigent.native.native_terminal import (
     bind_session_runner as _bind_session_runner,
 )
+from omnigent.native.native_terminal import fetch_session_chat_features, request_with_429_retry
 from omnigent.native.native_terminal import (
     normalize_extra_args as _normalize_extra_args,
 )
-from omnigent.native.native_terminal import request_with_429_retry
 from omnigent.native.native_terminal import (
     terminal_attach_url as _attach_url,
 )
+from omnigent.runtime.chat_features import ChatFeature, chat_features_from_wire
 from omnigent.runtime.prompt import native_startup_instructions
 from omnigent.runtime.tool_result_replay import sanitize_replayed_image_blocks
 from omnigent.util.http_retry import jittered_retry_delay
@@ -744,9 +745,7 @@ def _run_with_local_server(
                     command=command,
                     model=model,
                     startup_progress=progress,
-                    developer_instructions=native_startup_instructions(
-                        _wrapper_spec_raw_instructions(spec_path)
-                    ),
+                    author_instructions=_wrapper_spec_raw_instructions(spec_path),
                 )
             if resolved_session_id is None:
                 _record_launch_for_fresh_session(prepared.session_id)
@@ -1162,7 +1161,7 @@ async def _prepare_codex_terminal(
     command: str,
     model: str | None,
     startup_progress: RunnerStartupProgress | None = None,
-    developer_instructions: str | None = None,
+    author_instructions: str | None = None,
 ) -> PreparedCodexTerminal:
     """
     Create/bind a session, start app-server, and launch Codex TUI.
@@ -1177,8 +1176,8 @@ async def _prepare_codex_terminal(
     :param model: Optional model id.
     :param startup_progress: Optional user-visible progress renderer,
         e.g. a handle from :func:`runner_startup_progress`.
-    :param developer_instructions: Author instructions plus static framework
-        guidance (:func:`native_startup_instructions`) persisted into
+    :param author_instructions: Raw author instructions. With the session's
+        chat-feature guidance they become ``developer_instructions`` in
         Codex's private per-session config, applied on fresh launch and
         cold resume only — the reattach branch below returns before this
         is used, so it never relaunches or duplicates the value.
@@ -1192,12 +1191,14 @@ async def _prepare_codex_terminal(
         thread_id: str | None = None
         # A new session carries only internal labels, so it tags just the session id.
         session_labels: dict[str, str] = {}
+        chat_features: frozenset[ChatFeature]
         if session_id is None:
             if session_bundle is None:
                 raise click.ClickException("Creating a Codex session requires a session bundle.")
             _update_startup_progress(startup_progress, "Creating Codex session...")
             bridge_id = secrets.token_urlsafe(24)
             session_id = await _create_codex_session(client, session_bundle, bridge_id=bridge_id)
+            chat_features = await fetch_session_chat_features(client, session_id)
         else:
             _update_startup_progress(startup_progress, "Loading Codex session...")
             payload = await _fetch_codex_session(client, session_id)
@@ -1211,6 +1212,7 @@ async def _prepare_codex_terminal(
                 )
             bridge_id = str(labels.get(CODEX_NATIVE_BRIDGE_ID_LABEL_KEY) or session_id)
             session_labels = {str(key): str(value) for key, value in labels.items()}
+            chat_features = chat_features_from_wire(payload.get("chat_features"))
             existing_terminal = await _find_running_codex_terminal(client, session_id)
             external_session_id = payload.get("external_session_id")
             thread_id = external_session_id if isinstance(external_session_id, str) else None
@@ -1288,7 +1290,7 @@ async def _prepare_codex_terminal(
             bridge_dir=bridge_dir,
             ap_server_url=base_url,
             ap_auth_headers=headers,
-            developer_instructions=developer_instructions,
+            developer_instructions=native_startup_instructions(author_instructions, chat_features),
             terminal_launch_args=codex_args,
             session_labels=session_labels,
         )

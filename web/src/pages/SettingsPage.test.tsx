@@ -197,6 +197,10 @@ vi.mock("@/pages/MembersPage", () => ({
 vi.mock("@/pages/PoliciesPage", () => ({
   PoliciesPage: () => <div>policies-page-stub</div>,
 }));
+// Server-backed and covered by its own test; this page renders no QueryClient.
+vi.mock("@/pages/settings/ChatFeaturesSettingsGroup", () => ({
+  ChatFeaturesSettingsGroup: () => null,
+}));
 vi.mock("@/components/McpRegistry", () => ({
   McpRegistryConnections: () => <div>mcp-accounts-stub</div>,
 }));

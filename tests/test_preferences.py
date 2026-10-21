@@ -22,6 +22,7 @@ MODEL = PreferenceKey(PreferenceKind.MODEL, "model")
 HARNESS = PreferenceKey(PreferenceKind.HARNESS, "default")
 ARGS = PreferenceKey(PreferenceKind.HARNESS_ARGS, "codex-native")
 PLUGIN = PreferenceKey(PreferenceKind.PLUGIN, PluginIdentity("claude", "marketplace-a", "tools"))
+CHAT_FEATURES = PreferenceKey(PreferenceKind.CHAT_FEATURES, "default")
 SCOPES = (
     PreferenceScope.BUILTIN,
     PreferenceScope.MANAGED,
@@ -117,6 +118,15 @@ def test_snapshot_and_edits_do_not_alias_input_maps():
     assert layer.values[MODEL] == "original"
 
 
+def test_chat_feature_set_is_normalized_and_empty_stays_explicit():
+    layer = PreferenceLayer(
+        PreferenceScope.SHARED, IDENTITY, {CHAT_FEATURES: ("run_commands", "a", "run_commands")}
+    )
+    assert layer.values[CHAT_FEATURES] == ("a", "run_commands")
+    cleared = layer.with_value(CHAT_FEATURES, ())
+    assert resolve_preferences(CONTEXT, [cleared])[CHAT_FEATURES].value == ()
+
+
 def test_plugin_keys_distinguish_ecosystem_source_and_name():
     plugin = PLUGIN.name
     keys = [PLUGIN] + [
@@ -139,6 +149,8 @@ def test_plugin_keys_distinguish_ecosystem_source_and_name():
         (ARGS, ["--profile", "x"]),
         (ARGS, (1,)),
         (ARGS, "--profile x"),
+        (CHAT_FEATURES, ["run_commands"]),
+        (CHAT_FEATURES, ("",)),
     ],
 )
 def test_invalid_values_fail_at_the_layer_boundary(key, value):
@@ -154,6 +166,7 @@ def test_invalid_values_fail_at_the_layer_boundary(key, value):
         (PreferenceKind.PLUGIN, "ambiguous-plugin"),
         (PreferenceKind.HARNESS_ARGS, ""),
         (PreferenceKind.HARNESS_ARGS, "default"),
+        (PreferenceKind.CHAT_FEATURES, "run_commands"),
     ],
 )
 def test_invalid_keys_are_rejected(kind, name):

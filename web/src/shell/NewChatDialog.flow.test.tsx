@@ -35,6 +35,7 @@ import type * as AgentLabelsModule from "@/lib/agentLabels";
 import type { SessionListWireItem } from "@/lib/sessionListCache";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { seedChatFeaturePreferences } from "@/test/chatFeatureFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
@@ -273,6 +274,7 @@ function renderLanding(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  seedChatFeaturePreferences(client);
   if (cachedSessionIds.length > 0) {
     // Sessions already on screen when the create starts. "Never seen by this
     // tab" is part of how the screen recognizes its own announced row, so the

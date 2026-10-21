@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 import pytest
 
+from omnigent.runtime.chat_features import DEFAULT_CHAT_FEATURES, encode_chat_features
 from tests.server.helpers import create_test_agent
 
 pytestmark = pytest.mark.asyncio
@@ -432,7 +433,9 @@ async def test_override_storage_limit_is_checked_before_create(
             }
         )
     limit = SqlConversation.__table__.c.session_overrides.type.length
-    overhead = len(json.dumps(overrides, separators=(",", ":")))
+    # Every new session also stores its resolved (default) chat features.
+    stored = {**overrides, "chat_features": encode_chat_features(DEFAULT_CHAT_FEATURES)}
+    overhead = len(json.dumps(stored, separators=(",", ":")))
     overrides["harness_override"] += "a" * (limit - overhead + extra)
     store = get_conversation_store()
     before = {conv.id for conv in store.list_conversations().data}
@@ -459,9 +462,11 @@ async def test_override_growth_rejects_patch_without_mutation(client: httpx.Asyn
 
     agent = await create_test_agent(client)
     limit = SqlConversation.__table__.c.session_overrides.type.length
-    harness = "acp:" + "a" * (
-        limit - len(json.dumps({"harness_override": "acp:"}, separators=(",", ":")))
-    )
+    stored = {
+        "harness_override": "acp:",
+        "chat_features": encode_chat_features(DEFAULT_CHAT_FEATURES),
+    }
+    harness = "acp:" + "a" * (limit - len(json.dumps(stored, separators=(",", ":"))))
     created = await client.post(
         "/v1/sessions", json={"agent_id": agent["id"], "harness_override": harness}
     )

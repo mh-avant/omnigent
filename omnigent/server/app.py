@@ -112,7 +112,10 @@ from omnigent.server.routes.extensions import create_extensions_router
 from omnigent.server.routes.harnesses import create_harnesses_router
 from omnigent.server.routes.imports import create_imports_router
 from omnigent.server.routes.policy_registry import create_policy_registry_router
-from omnigent.server.routes.preferences import create_preferences_router
+from omnigent.server.routes.preferences import (
+    create_chat_features_router,
+    create_preferences_router,
+)
 from omnigent.server.routes.projects import create_projects_router
 from omnigent.server.routes.runner_tunnel import create_runner_tunnel_router
 from omnigent.server.routes.scheduled_tasks import create_scheduled_tasks_router
@@ -1924,6 +1927,8 @@ def create_app(
     )
     app.state.startup_inputs = startup_inputs
     app.state.host_store = host_store
+    # Session create paths read the creator's default chat features from it.
+    app.state.preference_store = preference_store
     app.state.mcp_gateway_backend = mcp_gateway_backend
     app.state.mcp_registry = mcp_registry
     app.state.mcp_registry_auth = auth_provider
@@ -3403,6 +3408,7 @@ def create_app(
             project_store=project_store,
             host_registry=host_registry,
             host_store=host_store,
+            preference_store=preference_store,
         ),
         prefix="/v1",
         tags=["imports"],
@@ -3577,6 +3583,11 @@ def create_app(
             prefix="/v1",
             tags=["preferences"],
         )
+    app.include_router(
+        create_chat_features_router(auth_provider),
+        prefix="/v1",
+        tags=["chat-features"],
+    )
 
     # ── Tunnel lifecycle callbacks (Step 8.5 crash recovery) ───
 

@@ -11,6 +11,7 @@ from omnigent.entities import ConversationItem, FunctionCallOutputData, MessageD
 from omnigent.runner.subagent_work import (
     _format_subagent_wake_notice,
 )
+from omnigent.runtime.chat_features import DEFAULT_CHAT_FEATURES, chat_feature_instructions
 from omnigent.runtime.mcp_tool_result import encode_mcp_image_result
 from omnigent.runtime.prompt import (
     EMBEDDED_BROWSER_PRIORITY_INSTRUCTION,
@@ -432,10 +433,10 @@ def test_raw_author_instructions_verbatim_and_none() -> None:
 
 def test_native_startup_instructions_append_item_labels_after_author_text() -> None:
     """Native launch channels carry the author text first, then the label guidance."""
-    assert native_startup_instructions("  Agent prompt  ") == (
+    assert native_startup_instructions("  Agent prompt  ", frozenset()) == (
         f"  Agent prompt  \n\n{ITEM_LABEL_INSTRUCTION}"
     )
-    assert native_startup_instructions(None) == ITEM_LABEL_INSTRUCTION
+    assert native_startup_instructions(None, frozenset()) == ITEM_LABEL_INSTRUCTION
 
 
 def test_item_label_examples_match_the_chat_label_shape() -> None:
@@ -449,3 +450,37 @@ def test_item_label_examples_match_the_chat_label_shape() -> None:
 def test_item_label_instruction_shows_a_bold_title_after_the_label() -> None:
     """The example puts a bold title right after the label, which the chat UI lists items by."""
     assert re.search(r"\[[A-Z]{1,3}\d{1,3}\] \*\*[^*]+\*\* \S", ITEM_LABEL_INSTRUCTION)
+
+
+@pytest.mark.parametrize("nullable", [False, True], ids=["build", "nullable"])
+def test_chat_feature_instructions_follow_spec_guidance_when_enabled(nullable: bool) -> None:
+    compose = build_instructions_nullable if nullable else build_instructions
+    (feature_instruction,) = chat_feature_instructions(DEFAULT_CHAT_FEATURES)
+
+    enabled = compose(
+        _spec("Agent prompt"),
+        None,
+        [],
+        framework_instructions=("Turn prompt",),
+        chat_features=DEFAULT_CHAT_FEATURES,
+    )
+    disabled = compose(_spec("Agent prompt"), None, [], framework_instructions=("Turn prompt",))
+
+    assert enabled == (
+        f"Agent prompt\n\n{_EVERY_AGENT_GUIDANCE}\n\n{feature_instruction}\n\nTurn prompt"
+    )
+    assert disabled == f"Agent prompt\n\n{_EVERY_AGENT_GUIDANCE}\n\nTurn prompt"
+
+
+def test_native_startup_instructions_carry_only_enabled_features() -> None:
+    (feature_instruction,) = chat_feature_instructions(DEFAULT_CHAT_FEATURES)
+
+    assert native_startup_instructions("Author", DEFAULT_CHAT_FEATURES) == (
+        f"Author\n\n{ITEM_LABEL_INSTRUCTION}\n\n{feature_instruction}"
+    )
+    assert native_startup_instructions(None, DEFAULT_CHAT_FEATURES) == (
+        f"{ITEM_LABEL_INSTRUCTION}\n\n{feature_instruction}"
+    )
+    assert native_startup_instructions("Author", frozenset()) == (
+        f"Author\n\n{ITEM_LABEL_INSTRUCTION}"
+    )

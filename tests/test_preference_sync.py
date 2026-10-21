@@ -24,6 +24,10 @@ from omnigent.preference_sync import MAX_VALUE_BYTES, PreferenceMutation, Shared
         {"value": ""},
         {"key": {"kind": "harness_args", "name": "codex-native"}, "value": [False]},
         {"key": {"kind": "harness_args", "name": "codex-native"}, "value": "--profile a"},
+        {"key": {"kind": "chat_features", "name": "run_commands"}, "value": []},
+        {"key": {"kind": "chat_features", "name": "default"}, "value": "run_commands"},
+        {"key": {"kind": "chat_features", "name": "default"}, "value": [""]},
+        {"key": {"kind": "chat_features", "name": "default"}, "value": [" run_commands"]},
         {"value": "x" * 8192},
         {"scope": "machine"},
         {"resolves": ["00000000-0000-0000-0000-000000000001"] * 2},
@@ -76,3 +80,21 @@ def test_value_envelope_accepts_exact_utf8_limit(character):
     assert len(operation.model_dump_json(include={"value"}).encode()) == MAX_VALUE_BYTES
     with pytest.raises(ValidationError, match="8192"):
         PreferenceMutation.model_validate({**body, "value": value + "x"})
+
+
+def test_chat_features_value_is_a_sorted_unique_set_that_keeps_unknown_keys():
+    operation = PreferenceMutation.model_validate(
+        {
+            "protocol_version": 1,
+            "identity": {"authority_id": "a", "user_id": "u", "workspace_id": "0"},
+            "operation_id": str(uuid4()),
+            "installation_id": "laptop",
+            "key": {"kind": "chat_features", "name": "default"},
+            "expected_version": 0,
+            "value": ["run_commands", "from_newer_build", "run_commands"],
+        }
+    )
+    assert operation.value == ["from_newer_build", "run_commands"]
+    assert operation.key.storage_key() == (
+        "1b84ce3d80b053f0a2a584c88ab1fb36bdb4863047556aee86a5acc851ffd93e"
+    )

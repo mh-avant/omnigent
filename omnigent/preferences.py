@@ -63,11 +63,12 @@ class PreferenceKind(StrEnum):
     HARNESS = "harness"
     HARNESS_ARGS = "harness_args"
     PLUGIN = "plugin"
+    CHAT_FEATURES = "chat_features"
 
 
 @dataclass(frozen=True)
 class PreferenceKey:
-    """One merge unit: a model, default harness, ordered args, or plugin toggle."""
+    """One merge unit: a model, default harness, ordered args, plugin or chat-feature set."""
 
     kind: PreferenceKind
     name: str | PluginIdentity
@@ -84,6 +85,8 @@ class PreferenceKey:
             raise ValueError("unknown model preference key")
         if self.kind == PreferenceKind.HARNESS and self.name != "default":
             raise ValueError("the harness preference key must be 'default'")
+        if self.kind == PreferenceKind.CHAT_FEATURES and self.name != "default":
+            raise ValueError("the chat_features preference key must be 'default'")
         if self.kind == PreferenceKind.HARNESS_ARGS:
             from omnigent.harness_aliases import canonicalize_harness
 
@@ -97,6 +100,13 @@ class PreferenceKey:
 PreferenceValue: TypeAlias = str | bool | tuple[str, ...]
 
 
+def normalize_preference_value(key: PreferenceKey, value: PreferenceValue) -> PreferenceValue:
+    """Canonical form of ``value``: a chat-feature set is unique keys in sorted order."""
+    if key.kind == PreferenceKind.CHAT_FEATURES and isinstance(value, tuple):
+        return tuple(sorted(set(value)))
+    return value
+
+
 def _require_name(value: object) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("preference identifiers must be non-empty strings")
@@ -107,6 +117,12 @@ def _validate_value(key: PreferenceKey, value: PreferenceValue) -> None:
         valid = isinstance(value, bool)
     elif key.kind == PreferenceKind.HARNESS_ARGS:
         valid = isinstance(value, tuple) and all(isinstance(arg, str) for arg in value)
+    elif key.kind == PreferenceKind.CHAT_FEATURES:
+        # Feature keys this build doesn't know stay valid so versions can share a value.
+        valid = isinstance(value, tuple) and all(
+            isinstance(feature, str) and feature and feature == feature.strip()
+            for feature in value
+        )
     else:
         valid = isinstance(value, str) and bool(value.strip())
     if not valid:
@@ -129,9 +145,11 @@ class PreferenceLayer:
             _require_name(self.installation_id)
         elif self.installation_id is not None:
             raise ValueError("only machine preferences have an installation ID")
-        values = dict(self.values)
-        for key, value in values.items():
+        for key, value in self.values.items():
             _validate_value(key, value)
+        values = {
+            key: normalize_preference_value(key, value) for key, value in self.values.items()
+        }
         object.__setattr__(self, "values", MappingProxyType(values))
 
     def with_value(self, key: PreferenceKey, value: PreferenceValue) -> PreferenceLayer:

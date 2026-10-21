@@ -22,8 +22,11 @@ and shared/machine scope controls are not available through the CLI or UI yet.
   supported setting in an existing session; keep the two composers distinct.
 - `shared-scopes`: resolver only; requested values and their sources remain
   distinct across shared, machine, project, and session scopes.
-- `shared-operations`: opt-in server API; read/save all four groups, retry an
+- `shared-operations`: opt-in server API; read/save all five groups, retry an
   edit, remove a preference, inspect competing edits, and resolve them explicitly.
+- `chat-features-default`: the chat features new sessions start with, saved as
+  the `chat_features` shared preference from Settings → General and read by the
+  server when it creates a session.
 
 ## How to get to it (user POV)
 
@@ -52,6 +55,13 @@ The [API guide](../docs/shared-preferences-api.md) covers requests, conflict
 resolution, identity, and limits. These endpoints do not adopt preferences into
 launchers or turn on sync. Embedded apps opt in with `create_app(preference_store=...)`;
 omitting an auth provider uses the reserved `local` user namespace.
+
+**Chat-features default:** Settings → General → Chat features saves the default
+through the shared operations API, shows competing edits with a Keep button for
+each, and resolves them on save. Without `shared_preferences_authority_id` the
+switches are disabled with a note, and new sessions get every feature. The
+new-chat agent menu and the session configure menu set one session's features
+on any server.
 
 **Shared scope controls:** the CLI and UI do not yet offer importing/reimporting
 preferences, saving shared or machine defaults, removing a machine override,
@@ -135,6 +145,19 @@ run `tests/stores`; the real-process test is an explicit run on those backends:
 uv run --no-sync pytest tests/stores/test_preference_store.py \
   tests/server/routes/test_preferences.py tests/test_preference_sync.py --reruns 0 -q
 ```
+
+**Chat-features default (component and integration coverage):**
+
+```sh
+uv run --no-sync pytest tests/server/integration/test_sessions_chat_features.py --reruns 0 -q
+pnpm --dir web exec vitest run src/lib/chatFeaturesApi.test.ts \
+  src/lib/sharedPreferencesApi.test.ts src/pages/settings/ChatFeaturesSettingsGroup.test.tsx
+```
+
+The integration test saves the default through the real routes and checks
+create-time resolution, unknown keys, removal, and a server without the API.
+The web tests cover pagination restarts, retries, conflicts, and the disabled
+Settings state with stubbed responses; no browser journey covers it yet.
 
 The [store matrix](../tests/stores/test_preference_store.py) covers bounded
 pages, concurrent edits, limits, atomic rejection, and stable retry receipts.

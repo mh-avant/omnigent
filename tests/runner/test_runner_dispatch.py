@@ -91,6 +91,11 @@ from omnigent.runner.app import (
 from omnigent.runner.policy_proxy import (
     _evaluate_policy_via_omnigent,
 )
+from omnigent.runtime.chat_features import (
+    DEFAULT_CHAT_FEATURES,
+    ChatFeature,
+    chat_feature_instructions,
+)
 from omnigent.runtime.harnesses import _HARNESS_MODULES
 from omnigent.runtime.harnesses._executor_adapter import (
     _ORPHAN_RESYNC_THRESHOLD,
@@ -12680,9 +12685,12 @@ class _ContractSnapshotClient(NullServerClient):
 _CONTRACT_CALLER_INSTRUCTIONS = "Caller-supplied instructions."
 
 
-def _contract_composed_instructions(*parts: str) -> str:
+def _contract_composed_instructions(*parts: str, chat_features: bool = True) -> str:
     """Compose expected author/request text with framework guidance."""
-    return "\n\n".join((*parts, EMBEDDED_BROWSER_PRIORITY_INSTRUCTION, ITEM_LABEL_INSTRUCTION))
+    feature_text = chat_feature_instructions(DEFAULT_CHAT_FEATURES) if chat_features else []
+    return "\n\n".join(
+        (*parts, EMBEDDED_BROWSER_PRIORITY_INSTRUCTION, ITEM_LABEL_INSTRUCTION, *feature_text)
+    )
 
 
 async def _contract_run_no_harness(
@@ -12999,6 +13007,57 @@ async def test_cross_path_resolution_contract(
             f"because their transports report differently, not because they "
             f"answer the same question differently."
         )
+
+
+@pytest.mark.parametrize("stream", [True, False], ids=["stream", "background"])
+@pytest.mark.asyncio
+async def test_turn_chat_features_select_framework_instructions(stream: bool) -> None:
+    """A turn body's chat features apply to that turn and stick until the next set."""
+    conv = f"conv_chat_features_{'stream' if stream else 'background'}"
+    recording = _RecordingHarnessClient(_INSTRUCTION_WARN_CHUNKS)
+    app = create_runner_app(
+        process_manager=cast(HarnessProcessManager, _FakeProcessManager(recording)),
+        spec_resolver=_contract_resolver_for("child_present", []),
+        server_client=_ContractSnapshotClient(conv),  # type: ignore[arg-type]
+    )
+
+    async def _turn(extra: dict[str, Any]) -> str | None:
+        body = {
+            "type": "message",
+            "role": "user",
+            "agent_id": "ag_contract_root",
+            "model": "x",
+            "content": [] if stream else [{"role": "user", "content": "hi"}],
+            **extra,
+        }
+        if stream:
+            resp = await http.post(f"/v1/sessions/{conv}/events?stream=true", json=body)
+            assert resp.status_code == 200, resp.text
+        else:
+            resp = await http.post(f"/v1/sessions/{conv}/events", json=body)
+            assert resp.status_code == 202, resp.text
+            await _await_bg_turn_task(conv)
+        return cast(str | None, recording.posted_bodies[-1].get("instructions"))
+
+    async with _runner_test_client(app) as http:
+        disabled = await _turn({"chat_features": []})
+        remembered = await _turn({})
+        enabled = await _turn({"chat_features": ["run_commands", "retired"]})
+
+    assert disabled == _contract_composed_instructions("Worker instructions.", chat_features=False)
+    assert remembered == disabled
+    assert enabled == _contract_composed_instructions("Worker instructions.")
+
+
+def test_resolve_turn_chat_features_prefers_body_then_session_then_defaults() -> None:
+    from omnigent.runner.app import _resolve_turn_chat_features
+
+    cache: dict[str, frozenset[ChatFeature]] = {}
+
+    assert _resolve_turn_chat_features(cache, "conv", {}) == DEFAULT_CHAT_FEATURES
+    assert _resolve_turn_chat_features(cache, "conv", {"chat_features": []}) == frozenset()
+    assert _resolve_turn_chat_features(cache, "conv", {}) == frozenset()
+    assert cache == {"conv": frozenset()}
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,7 @@ from omnigent.runtime import (
     user_session_stream,
 )
 from omnigent.runtime.agent_cache import AgentCache
+from omnigent.runtime.chat_features import encode_chat_features, ordered_chat_features
 from omnigent.runtime.policies.approval import _ELICITATION_MODE
 from omnigent.server._elicitation_registry import (
     _harness_elicitation_owners,
@@ -185,6 +186,10 @@ from omnigent.server.routes._sessions.orchestration import (
     _spawn_archive_stop,
     _validate_session_model_selection,
     ensure_runner_connected,
+)
+from omnigent.server.routes.preferences import (
+    parse_requested_chat_features,
+    resolve_new_session_chat_features,
 )
 from omnigent.server.schemas import (
     AutomaticSessionRenameRequest,
@@ -1218,6 +1223,22 @@ def register_core_routes(
                 conversation_store=conversation_store,
                 runner_router=runner_router,
             )
+        chat_features = await resolve_new_session_chat_features(
+            (
+                parse_requested_chat_features(parsed_metadata.chat_features)
+                if parsed_metadata.chat_features is not None
+                else None
+            ),
+            user_id=user_id,
+            app_state=request.app.state,
+            parent_chat_features_override=parent_conv.chat_features_override
+            if parent_conv
+            else None,
+            has_parent=parsed_metadata.parent_session_id is not None,
+        )
+        parsed_metadata = parsed_metadata.model_copy(
+            update={"chat_features": [str(f) for f in ordered_chat_features(chat_features)]}
+        )
 
         bundle_bytes = await bundle.read()
         # Validate the bundle BEFORE any row exists: the external-host
@@ -2834,6 +2855,22 @@ def register_core_routes(
             body.subagent_routing_override
         )
 
+        # Chat features: omitted leaves them unchanged; explicit null resets to
+        # the caller's saved default.
+        chat_features_override: str | None = None
+        if "chat_features" in body.model_fields_set:
+            chat_features_override = encode_chat_features(
+                await resolve_new_session_chat_features(
+                    (
+                        parse_requested_chat_features(body.chat_features)
+                        if body.chat_features is not None
+                        else None
+                    ),
+                    user_id=user_id,
+                    app_state=request.app.state,
+                )
+            )
+
         # Native-terminal pass-through args: ``None`` leaves them
         # unchanged; a provided list (including ``[]``) replaces the
         # stored value wholesale (resume is last-write-wins, never an
@@ -3049,6 +3086,7 @@ def register_core_routes(
                 None if clear_subagent_routing else subagent_routing_override
             ),
             _unset_subagent_routing_override=clear_subagent_routing,
+            chat_features_override=chat_features_override,
             # Owner opt-in for workspace-file browsing. Presence is the signal:
             # an omitted field leaves it unchanged; True/False set or clear it.
             share_workspace_files=(body.share_workspace_files if set_share_workspace else None),

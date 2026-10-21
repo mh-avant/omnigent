@@ -22,12 +22,14 @@ from omnigent.entities import NewConversationItem, parse_item_data
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.host.frames import HostImportLocalByIdFrame, HostImportLocalFrame, encode_host_frame
 from omnigent.native.native_coding_agents import native_coding_agent_for_harness
+from omnigent.runtime.chat_features import encode_chat_features
 from omnigent.server.auth import LEVEL_OWNER, AuthProvider
 from omnigent.server.host_registry import HostConnection, HostRegistry
 from omnigent.server.routes._auth_helpers import require_access, require_user
 from omnigent.server.routes._content_type import require_json_content_type
 from omnigent.server.routes._host_launch import host_absent_error, resolve_host_owner
 from omnigent.server.routes._session_create_validation import resolve_project_session_create
+from omnigent.server.routes.preferences import resolve_session_chat_features
 from omnigent.server.schemas import SessionCreateRequest
 from omnigent.session_import import (
     IMPORT_EXTERNAL_SESSION_ID_LABEL_KEY,
@@ -39,6 +41,7 @@ from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.conversation_store import ConversationAlreadyExistsError
 from omnigent.stores.host_store import HostStore
 from omnigent.stores.permission_store import PermissionStore
+from omnigent.stores.preference_store import PreferenceStore
 from omnigent.stores.project_store import ProjectStore
 
 _logger = logging.getLogger(__name__)
@@ -337,6 +340,7 @@ def create_imports_router(
     project_store: ProjectStore | None = None,
     host_registry: HostRegistry | None = None,
     host_store: HostStore | None = None,
+    preference_store: PreferenceStore | None = None,
 ) -> APIRouter:
     """Create the local-session import router."""
     router = APIRouter()
@@ -407,6 +411,12 @@ def create_imports_router(
         workspace = resolved_create.body.workspace
         resolved_host_id = resolved_create.body.host_id
         title = (native_title or "").strip() or title_from_items(items)
+        chat_features = await asyncio.to_thread(
+            resolve_session_chat_features,
+            None,
+            user_id=user_id,
+            preference_store=preference_store,
+        )
         if replace_conversation_id is not None:
             await conversation_store.delete_conversation(replace_conversation_id)
         try:
@@ -418,6 +428,7 @@ def create_imports_router(
                 workspace=workspace,
                 conversation_id=_import_conversation_id(source, external_session_id),
                 project_id=resolved_create.project_id,
+                chat_features_override=encode_chat_features(chat_features),
             )
         except ConversationAlreadyExistsError as exc:
             raise OmnigentError(

@@ -504,6 +504,7 @@ class ConversationStore(ABC):
         subagent_routing_override: str | None = None,
         harness_override: str | None = None,
         provider_override: str | None = None,
+        chat_features_override: str | None = None,
     ) -> Conversation:
         """
         Create a new conversation. Generates a unique
@@ -567,6 +568,7 @@ class ConversationStore(ABC):
         :param subagent_routing_override: Optional per-session sub-agent routing mode.
         :param harness_override: Optional per-session harness override.
         :param provider_override: Optional host provider the session runs on.
+        :param chat_features_override: Optional encoded enabled chat features.
         :returns: The newly created :class:`Conversation`.
         :raises NameAlreadyExistsError: If
             ``parent_conversation_id`` is not ``None`` and a
@@ -1008,6 +1010,7 @@ class ConversationStore(ABC):
         _unset_subagent_routing_override: bool = False,
         harness_override: str | None = None,
         _unset_harness_override: bool = False,
+        chat_features_override: str | None = None,
         share_workspace_files: bool | None = None,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
@@ -1055,6 +1058,8 @@ class ConversationStore(ABC):
             variant — the override is set once at session create and
             immutable thereafter (the harness process is spawned on
             the first turn).
+        :param chat_features_override: Encoded enabled chat features, e.g.
+            ``"run_commands"``; ``""`` disables all. ``None`` leaves unchanged.
         :param share_workspace_files: Whether view-level collaborators may
             browse the workspace. ``True`` stores the share, ``False``
             clears it (edit-only again), ``None`` leaves it unchanged.
@@ -1100,6 +1105,7 @@ class ConversationStore(ABC):
         _unset_subagent_routing_override: bool = False,
         harness_override: str | None = None,
         _unset_harness_override: bool = False,
+        chat_features_override: str | None = None,
         share_workspace_files: bool | None = None,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
@@ -1871,6 +1877,7 @@ class ConversationStore(ABC):
         host_id: str | None = None,
         inference_snapshot: dict[str, Any] | None = None,
         created_by: str | None = None,
+        chat_features_override: str | None = None,
     ) -> CreatedSession:
         """
         Atomically create a session and its session-scoped agent.
@@ -1915,6 +1922,7 @@ class ConversationStore(ABC):
         :param created_by: Identity of the creating user, recorded on the
             session-scoped agent so its code can only be mutated by the
             owner. ``None`` in single-user mode.
+        :param chat_features_override: Optional encoded enabled chat features.
         :returns: The committed conversation and agent entities.
         :raises ConversationNotFoundError: If
             ``parent_conversation_id`` is set but no such

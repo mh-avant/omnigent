@@ -398,6 +398,11 @@ export interface Session {
    */
   subagentRoutingOverride?: "on" | "off" | null;
   /**
+   * Enabled chat-feature keys, e.g. `["run_commands"]`. Each pairs a chat
+   * renderer with an agent instruction; a missing key turns both off.
+   */
+  chatFeatures?: string[];
+  /**
    * Whether the owner opted into letting people with *view* (read-only)
    * access browse this session's workspace files (the Files/Changes/Pull Requests
    * surfaces and the file contents behind them). `false` by default — a

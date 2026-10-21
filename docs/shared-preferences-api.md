@@ -1,9 +1,11 @@
 # Shared preference operations
 
 This opt-in API stores model choice (`model` and `opencode_model`), the default
-harness, ordered arguments per harness, and plugin enable/disable choices. It
-provides durable values, versions, conflict alternatives, and retry receipts.
-It does not import settings, enable automatic client sync, or change launches.
+harness, ordered arguments per harness, plugin enable/disable choices, and the
+chat features new sessions start with. It provides durable values, versions,
+conflict alternatives, and retry receipts. It does not import settings, enable
+automatic client sync, or change launches. The one value the server reads is
+the chat-features default, when it creates a session without its own set.
 
 ## Enable an isolated server
 
@@ -71,8 +73,11 @@ authenticated context; it does not select another user or workspace.
 | `{"kind":"harness","name":"default"}` | Nonempty harness name |
 | `{"kind":"harness_args","name":"claude-sdk"}` | Ordered string array; `[]` explicitly clears inherited arguments |
 | `{"kind":"plugin","name":{"ecosystem":"claude","source":"catalog","name":"tools"}}` | Boolean; `false` explicitly disables the plugin |
+| `{"kind":"chat_features","name":"default"}` | Array of chat-feature keys, stored sorted and unique; `[]` explicitly enables none |
 
-For every key, `null` removes the shared choice. Harness aliases use the existing
+For every key, `null` removes the shared choice; with no chat-features default,
+new sessions get every feature. Chat-feature keys a server doesn't know are kept,
+so builds that add features can share the value; session creation ignores them. Harness aliases use the existing
 canonicalization rules. Credentials, executable commands, plugin installation,
 and arbitrary plugin configuration are not supported preference keys.
 

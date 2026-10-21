@@ -149,6 +149,7 @@ from omnigent.native.native_terminal import (
 from omnigent.native.native_terminal import (
     bind_session_runner as _bind_session_runner,
 )
+from omnigent.native.native_terminal import fetch_session_chat_features
 from omnigent.native.native_terminal import (
     normalize_extra_args as _normalize_extra_args,
 )
@@ -3801,9 +3802,7 @@ def _run_with_local_server(
                     claude_config=claude_config,
                     startup_profiler=startup_profiler,
                     startup_progress=progress,
-                    append_system_prompt=native_startup_instructions(
-                        _wrapper_spec_raw_instructions(spec_path)
-                    ),
+                    author_instructions=_wrapper_spec_raw_instructions(spec_path),
                 )
             )
             _mark_startup_step(
@@ -5115,7 +5114,7 @@ async def _prepare_claude_terminal(
     claude_config: ClaudeNativeUcodeConfig | None = None,
     startup_profiler: StartupProfiler | None = None,
     startup_progress: RunnerStartupProgress | None = None,
-    append_system_prompt: str | None = None,
+    author_instructions: str | None = None,
 ) -> PreparedClaudeTerminal:
     """
     Create/bind a session and launch its Claude terminal resource.
@@ -5133,11 +5132,11 @@ async def _prepare_claude_terminal(
         marks. ``None`` disables output.
     :param startup_progress: Optional user-visible progress renderer,
         e.g. a handle from :func:`runner_startup_progress`.
-    :param append_system_prompt: Author instructions plus static framework
-        guidance (:func:`native_startup_instructions`) for
-        ``--append-system-prompt``, applied on fresh launch and cold
-        resume only — the hot-reattach fast path below returns before
-        this is used, so it never relaunches or duplicates the flag.
+    :param author_instructions: Raw author instructions. With the session's
+        chat-feature guidance they become ``--append-system-prompt``,
+        applied on fresh launch and cold resume only — the hot-reattach
+        fast path below returns before this is used, so it never
+        relaunches or duplicates the flag.
     :returns: Prepared terminal details.
     :raises click.ClickException: If any server operation fails.
     """
@@ -5287,7 +5286,9 @@ async def _prepare_claude_terminal(
             claude_config=claude_config_with_gateway_request_tags(
                 claude_config, session_id=session_id, labels=session_labels
             ),
-            append_system_prompt=append_system_prompt,
+            append_system_prompt=native_startup_instructions(
+                author_instructions, await fetch_session_chat_features(client, session_id)
+            ),
         )
         record_startup_event("terminal_available", session_id=session_id)
         _mark_startup_step(

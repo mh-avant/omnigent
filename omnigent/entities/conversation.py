@@ -136,6 +136,10 @@ class Conversation:
         ``PATCH /v1/sessions/{id}`` (the web "Cost Optimized"
         toggle). Read by the cost-control advisor pipeline at turn
         start; mirrors the persistence shape of ``model_override``.
+    :param chat_features_override: Encoded enabled chat features, e.g.
+        ``"run_commands"`` (``""`` when all are off). Decode with
+        ``decode_chat_features``; ``None`` only for sessions created before
+        the setting existed, which read as the defaults.
     :param subagent_routing_override: Per-session subagent-routing
         switch, two-state: ``"on"`` routes native/SDK subagent spawns,
         and ``"off"`` or ``None`` (unset) both leave them on the parent's
@@ -259,6 +263,7 @@ class Conversation:
     harness_override: str | None = None
     provider_override: str | None = None
     share_workspace_files: bool = False
+    chat_features_override: str | None = None
     sub_agent_name: str | None = None
     task_summary: str | None = None
     external_session_id: str | None = None

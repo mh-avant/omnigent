@@ -14,6 +14,7 @@ import type { ConversationItem } from "./conversationItems";
 import type { MessageContentBlock } from "./blocks";
 import type { McpServerStartup } from "./events";
 import { authenticatedFetch } from "./identity";
+import { DEFAULT_CHAT_FEATURES } from "./chatFeatures";
 import { isAndroidShell, isElectronShell, isIOSShell } from "@/lib/nativeBridge";
 import { sessionRoutingHostId, setSessionHost, setSessionParent } from "./sessionHost";
 import { backgroundSessionTitlesRequestHeaders } from "./backgroundSessionTitlesPreferences";
@@ -181,6 +182,8 @@ interface SessionResponseWire {
   cost_control_mode_override?: "on" | "off" | null;
   /** Sub-agent routing switch; `null`/absent reads the same as `"off"` (Default). */
   subagent_routing_override?: "on" | "off" | null;
+  /** Enabled chat-feature keys; absent from servers that predate the setting. */
+  chat_features?: string[];
   /** Owner opt-in: view-level collaborators may browse workspace files. */
   share_workspace_files?: boolean;
   context_window?: number | null;
@@ -350,6 +353,7 @@ function sessionFromWire(wire: SessionResponseWire): Session {
     providerOverride: wire.provider_override,
     costControlModeOverride: wire.cost_control_mode_override,
     subagentRoutingOverride: wire.subagent_routing_override,
+    chatFeatures: wire.chat_features ?? [...DEFAULT_CHAT_FEATURES],
     shareWorkspaceFiles: wire.share_workspace_files ?? false,
     contextWindow: wire.context_window,
     lastTotalTokens: wire.last_total_tokens,
@@ -749,6 +753,7 @@ export async function createBundledSession(
     terminal_launch_args?: string[];
     git?: { branch_name: string; base_branch?: string };
     mcp_registry_services?: string[];
+    chat_features?: string[];
   } = {},
 ): Promise<{ id: string }> {
   const form = new FormData();
@@ -1051,6 +1056,8 @@ export async function updateSession(
     codexApprovalMode?: string;
     costControlModeOverride?: "on" | "off" | null;
     subagentRoutingOverride?: "on" | "off" | null;
+    /** Enabled chat-feature keys; `null` resets to the user's saved default. */
+    chatFeatures?: string[] | null;
     /**
      * Owner opt-in that lets people with view (read-only) access browse the
      * workspace files. Owner-only server-side. `true`/`false` set or clear it.
@@ -1062,7 +1069,8 @@ export async function updateSession(
     labels?: Record<string, string | null>;
   },
 ): Promise<Session> {
-  const body: Record<string, string | boolean | null | Record<string, string | null>> = {};
+  const body: Record<string, string | string[] | boolean | null | Record<string, string | null>> =
+    {};
   if ("reasoningEffort" in updates) {
     body.reasoning_effort = updates.reasoningEffort ?? "default";
   }
@@ -1083,6 +1091,9 @@ export async function updateSession(
   }
   if ("subagentRoutingOverride" in updates) {
     body.subagent_routing_override = updates.subagentRoutingOverride ?? null;
+  }
+  if ("chatFeatures" in updates) {
+    body.chat_features = updates.chatFeatures ?? null;
   }
   if (updates.shareWorkspaceFiles !== undefined) {
     body.share_workspace_files = updates.shareWorkspaceFiles;
