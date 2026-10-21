@@ -103,6 +103,7 @@ from omnigent.server.performance_metrics import (
     set_request_session_id_for_access_log,
     set_request_user_agent_for_access_log,
 )
+from omnigent.server.pr_watch import build_pr_watcher
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
@@ -1841,6 +1842,10 @@ def create_app(
             # endpoints (see routes/scheduled_tasks.py); there is no startup
             # sweep and no periodic reconcile.
 
+        pr_watcher = build_pr_watcher(app_inst, conversation_store, host_registry)
+        if pr_watcher is not None:
+            await pr_watcher.start()
+
         managed_sandbox_reaper: ManagedSandboxReaper | None = None
         if sandbox_config is not None and sandbox_config.reaper.enabled:
             if host_store is None:
@@ -1859,6 +1864,8 @@ def create_app(
         try:
             yield
         finally:
+            if pr_watcher is not None:
+                await pr_watcher.shutdown()
             if managed_sandbox_reaper is not None:
                 await managed_sandbox_reaper.shutdown()
             # Run completion is event-driven (the _publish_status hook) plus a
@@ -3384,6 +3391,10 @@ def create_app(
             ),
             register_runner_ingest=lambda handler: setattr(
                 app.state, "runner_event_ingest", handler
+            ),
+            register_pr_info_reader=lambda handler: setattr(app.state, "pr_info_reader", handler),
+            register_server_message=lambda handler: setattr(
+                app.state, "server_message_dispatch", handler
             ),
         ),
         prefix="/v1",

@@ -251,6 +251,7 @@ import { buildFusionSections } from "@/components/composer/fusionSections";
 import { fusionOption, isFusionModelUid } from "@/lib/devinFusion";
 import { ComposerWorkspaceStatus } from "@/components/composer/ComposerWorkspaceStatus";
 import { ComposerPrLink } from "@/components/composer/ComposerPrLink";
+import { ComposerPrWatch } from "@/components/composer/ComposerPrWatch";
 import { ComposerContextRing } from "@/components/composer/ComposerContextRing";
 import { useComposerGitStatus } from "@/hooks/useComposerGitStatus";
 import { composerContextFromLabels } from "@/lib/composerContextAdapters";
@@ -3786,6 +3787,8 @@ function ComposerImpl(
             prNumberPrefix={composerGit.prNumberPrefix}
             onOpen={openComposerGithubTab}
           />
+          {/* Self-gates on the pr_watch feature and the session's PR state. */}
+          <ComposerPrWatch conversationId={composerSessionId} />
           <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
             <div
               data-testid="composer-task-indicators"

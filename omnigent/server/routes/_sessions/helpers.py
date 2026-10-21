@@ -10599,6 +10599,15 @@ def _reject_server_reserved_label_seed(labels: Mapping[str, str | None] | None) 
             f"label {_TURN_ACTOR_LABEL!r} is server-internal and cannot be set by clients",
             code=ErrorCode.INVALID_INPUT,
         )
+    from omnigent.stores.conversation_store import is_pr_watch_label
+
+    # Watches start through the pr-watch route, which checks edit access and the PR.
+    pr_watch_key = next((key for key in labels if is_pr_watch_label(key)), None)
+    if pr_watch_key is not None:
+        raise OmnigentError(
+            f"label {pr_watch_key!r} is server-internal; use /v1/sessions/{{id}}/pr-watch",
+            code=ErrorCode.INVALID_INPUT,
+        )
     # The archive timestamp is stamped by the server on the archive transition
     # only; a client write would forge the retention clock, including on shared
     # sessions the caller does not own.

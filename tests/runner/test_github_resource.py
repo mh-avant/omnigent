@@ -1096,6 +1096,13 @@ def test_shape_comments_filters_minimized_and_caps() -> None:
     assert github_resource._shape_comments([{"body": "hi"}]) == [
         {"author": None, "body": "hi", "created_at": None, "url": None}
     ]
+    # The author's repository role passes through when gh reports one.
+    assert (
+        github_resource._shape_comments(
+            [{"author": {"login": "m"}, "body": "b", "authorAssociation": "MEMBER"}]
+        )[0]["author_association"]
+        == "MEMBER"
+    )
     assert github_resource._shape_comments(None) == []
     assert github_resource._shape_comments(
         raw[:1] + raw[1 : github_resource._MAX_COMMENTS],

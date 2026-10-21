@@ -294,7 +294,7 @@ export interface PullRequestFileDiffResponse {
 
 /** Surface the server's error message (e.g. a git failure) rather than a bare
  *  status code, mirroring the workspace hooks. */
-async function errorFromResponse(res: Response): Promise<Error> {
+export async function errorFromResponse(res: Response): Promise<Error> {
   let message = `${res.status} ${res.statusText}`;
   try {
     const body = (await res.json()) as { error?: { message?: string }; detail?: unknown };

@@ -15,6 +15,7 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from omnigent.db.db_models import workspace_scope
 from omnigent.db.utils import get_or_create_engine
 from omnigent.entities import (
     CompactionData,
@@ -72,13 +73,16 @@ class _RetryOnceMaker:
 def test_fork_drops_import_provenance_labels(
     conversation_store: SqlAlchemyConversationStore,
 ) -> None:
-    """An imported session's fork must not claim the same source identity."""
+    """A fork must not claim the source's import identity or its PR watch."""
     source = conversation_store.create_conversation()
     conversation_store.set_labels(
         source.id,
         {
             IMPORT_SOURCE_LABEL_KEY: "claude",
             IMPORT_EXTERNAL_SESSION_ID_LABEL_KEY: "source-id",
+            "omnigent.pr_watch.mode": "all",
+            "omnigent.pr_watch.0123456789ab.url": "https://github.com/org/repo/pull/1",
+            "omnigent.pr_watch_unrelated": "kept",
             "kept": "yes",
         },
     )
@@ -91,6 +95,15 @@ def test_fork_drops_import_provenance_labels(
     assert fork.labels["kept"] == "yes"
     assert IMPORT_SOURCE_LABEL_KEY not in fork.labels
     assert IMPORT_EXTERNAL_SESSION_ID_LABEL_KEY not in fork.labels
+    assert not any(key.startswith("omnigent.pr_watch.") for key in fork.labels)
+    assert fork.labels["omnigent.pr_watch_unrelated"] == "kept"
+    # Only the source still shows up for the watcher, and only once.
+    family = conversation_store.list_label_family_conversations_all_workspaces
+    assert family("omnigent.pr_watch") == [(0, source.id)]
+    with workspace_scope(7):
+        other = conversation_store.create_conversation()
+        conversation_store.set_labels(other.id, {"omnigent.pr_watch": "https://x/pull/2"})
+    assert family("omnigent.pr_watch") == [(0, source.id), (7, other.id)]
 
 
 def test_fork_drops_sandbox_repo_label(

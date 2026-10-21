@@ -109,6 +109,7 @@ from omnigent.stores.conversation_store import (
     CreatedSession,
     DailyCostState,
     SessionConnectivity,
+    is_pr_watch_label,
     pinned_label_key,
 )
 from omnigent.stores.conversation_store.overrides import (
@@ -2767,6 +2768,28 @@ class SqlAlchemyConversationStore(ConversationStore):
             write,
         )
 
+    def list_label_family_conversations_all_workspaces(self, key: str) -> list[tuple[int, str]]:
+        """List every conversation carrying label *key* or a dotted child, across workspaces."""
+        stmt = (
+            select(SqlConversationLabel.workspace_id, SqlConversationLabel.conversation_id)
+            .where(
+                or_(
+                    SqlConversationLabel.key == key,
+                    SqlConversationLabel.key.startswith(f"{key}.", autoescape=True),
+                )
+            )
+            .distinct()
+            .order_by(
+                asc(SqlConversationLabel.workspace_id),
+                asc(SqlConversationLabel.conversation_id),
+            )
+        )
+        with self._conv_session("list_label_family_conversations_for_all_workspaces") as session:
+            return [
+                (int(workspace_id), str(conversation_id))
+                for workspace_id, conversation_id in session.execute(stmt).all()
+            ]
+
     def list_projects(
         self,
         accessible_by: str | None = None,
@@ -5222,6 +5245,7 @@ class SqlAlchemyConversationStore(ConversationStore):
                 )
                 and not key.startswith(f"{PINNED_LABEL_KEY}.")
                 and not key.startswith(f"{_SANDBOX_REPO_LABEL_KEY}.")
+                and not is_pr_watch_label(key)
                 and not (source_workspace_missing and key.startswith("omnigent.last_task_error_"))
             }
             source_workspace = source_meta_ref.workspace if source_meta_ref else None

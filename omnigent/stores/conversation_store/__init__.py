@@ -232,6 +232,15 @@ _FORK_ONLY_DROPPED_LABEL_KEYS = IMPORT_PROVENANCE_LABEL_KEYS | {
     _SANDBOX_REPO_LABEL_KEY,
     _SANDBOX_REQUESTED_HOST_ID_LABEL_KEY,
 }
+# A session's pull request watches (see ``omnigent.server.pr_watch``) live under
+# this key and its dotted children. They belong to the session that turned them
+# on; a fork watching the same PRs would double every wake-up.
+PR_WATCH_LABEL_PREFIX = "omnigent.pr_watch"
+
+
+def is_pr_watch_label(key: str) -> bool:
+    """Whether *key* is one of the server-owned pull request watch labels."""
+    return key == PR_WATCH_LABEL_PREFIX or key.startswith(f"{PR_WATCH_LABEL_PREFIX}.")
 
 
 @dataclass(frozen=True)
@@ -1256,6 +1265,20 @@ class ConversationStore(ABC):
         :param conversation_id: The conversation to update,
             e.g. ``"conv_abc123"``.
         :param key: The label key to remove, e.g. ``"omni_project"``.
+        """
+        ...
+
+    @abstractmethod
+    def list_label_family_conversations_all_workspaces(self, key: str) -> list[tuple[int, str]]:
+        """
+        List every conversation carrying label *key* or a ``key.``-prefixed child.
+
+        Background services run outside a request workspace scope, so they
+        cannot rely on ``current_workspace_id()`` to find tenant-scoped rows.
+
+        :param key: The label key, e.g. ``"omnigent.pr_watch"``.
+        :returns: Distinct ``(workspace_id, conversation_id)`` pairs ordered by
+            workspace and conversation id.
         """
         ...
 

@@ -99,6 +99,7 @@ import {
   type PullRequestReviewer,
 } from "@/hooks/usePullRequests";
 import { PullRequestLabels } from "./PullRequestLabels";
+import { PullRequestWatchSwitch } from "./PullRequestWatch";
 
 // Shiki bundled themes matching the app's editor look; the concrete side is
 // chosen by `themeType` from the app's resolved light/dark mode.
@@ -1730,6 +1731,15 @@ function PullRequestPanelDetails({
                 <ExternalLinkIcon className="size-3 shrink-0 text-muted-foreground" />
               </a>
               <PullRequestStatus state={pr.state} />
+              {pr.state === "OPEN" && (
+                <div className="ml-auto">
+                  <PullRequestWatchSwitch
+                    conversationId={conversationId}
+                    prUrl={data.selected_pr_url ?? pr.url}
+                    canEdit={canEdit}
+                  />
+                </div>
+              )}
             </div>
           </div>
           {/* Tab bar (Summary | Comments | Changes); the diff controls live inside

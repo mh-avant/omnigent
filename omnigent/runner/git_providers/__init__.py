@@ -49,6 +49,10 @@ Additive fields:
   may be null.
 - ``pr`` may carry ``labels`` of ``{name, color, description}``; ``color`` is six
   lowercase hex digits or null, and ``description`` may be null.
+- ``pr`` may carry ``mergeable``: false for a merge conflict, null while unknown.
+- A reviewer may carry ``submitted_at``, when their latest review was submitted.
+- A comment or reviewer may carry ``author_association``, the author's relationship
+  to the repository, e.g. ``"OWNER"``, ``"MEMBER"``, ``"COLLABORATOR"`` or ``"NONE"``.
 - A changed file's ``lines_added`` and ``lines_removed`` may be null.
 - Report lookup failures in ``warnings``. Mark incomplete checks/comments with
   ``checks.partial`` / ``comments_partial``; changed files use ``has_more`` or ``warning``.

@@ -232,6 +232,7 @@ def register_resources_routes(
     permission_store: PermissionStore | None = None,
     host_registry: HostRegistry | None = None,
     register_initial_file_upload: Callable[..., None] | None = None,
+    register_pr_info_reader: Callable[..., None] | None = None,
 ) -> None:
     """Register the resources routes on router."""
 
@@ -3192,6 +3193,22 @@ def register_resources_routes(
             runner_params={"pr_url": pr_url} if pr_url else None,
             runner_path=f"/v1/sessions/{session_id}/resources/github",
         )
+
+    async def read_pr_info(
+        session_id: str, conv: Conversation, pr_url: str | None
+    ) -> dict[str, Any]:
+        """Read a tracked PR (``None``: the default one) like the panel, for the PR watcher."""
+        return await _fs_get_with_host_fallback(
+            session_id,
+            conv,
+            op="github_info",
+            host_params={"pr_url": pr_url} if pr_url else {},
+            runner_params={"pr_url": pr_url} if pr_url else None,
+            runner_path=f"/v1/sessions/{session_id}/resources/github",
+        )
+
+    if register_pr_info_reader is not None:
+        register_pr_info_reader(read_pr_info)
 
     @router.get(
         "/sessions/{session_id}/resources/github/changes",

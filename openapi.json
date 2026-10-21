@@ -5078,6 +5078,192 @@
         "title": "ProjectOrderResponse",
         "type": "object"
       },
+      "PullRequestWatchChange": {
+        "description": "Body of `PATCH /v1/sessions/{id}/pr-watch`: watch or unwatch one PR.",
+        "properties": {
+          "max_wakes": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "maximum": 50.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wake-ups before its watch gives up; the server default when omitted.",
+            "title": "Max Wakes"
+          },
+          "pr_url": {
+            "description": "A pull request the session tracks.",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Pr Url",
+            "type": "string"
+          },
+          "watch": {
+            "description": "Whether to watch it.",
+            "title": "Watch",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pr_url",
+          "watch"
+        ],
+        "title": "PullRequestWatchChange",
+        "type": "object"
+      },
+      "PullRequestWatchEntry": {
+        "description": "One pull request's watch.",
+        "properties": {
+          "ended": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why its watch ended (`green`, `merged`, `closed`, `checks_unreadable`, `budget` or `undeliverable`), else `None`.",
+            "title": "Ended"
+          },
+          "max_wakes": {
+            "description": "Wake-ups before its watch stops.",
+            "format": "int64",
+            "title": "Max Wakes",
+            "type": "integer"
+          },
+          "pr_url": {
+            "description": "The pull request.",
+            "title": "Pr Url",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Epoch seconds when its watch started.",
+            "title": "Started At"
+          },
+          "wakes": {
+            "description": "Wake-up messages sent for it so far.",
+            "format": "int64",
+            "title": "Wakes",
+            "type": "integer"
+          },
+          "watching": {
+            "description": "Whether its watch is running.",
+            "title": "Watching",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pr_url",
+          "watching",
+          "wakes",
+          "max_wakes"
+        ],
+        "title": "PullRequestWatchEntry",
+        "type": "object"
+      },
+      "PullRequestWatchRequest": {
+        "description": "Body of `PUT /v1/sessions/{id}/pr-watch`: replace what the session watches.",
+        "properties": {
+          "max_wakes": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "maximum": 50.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wake-ups per PR before its watch gives up; the server default when omitted.",
+            "title": "Max Wakes"
+          },
+          "mode": {
+            "default": "selected",
+            "description": "`all` watches every PR the session tracks, now and later; `selected` watches exactly `pr_urls` (none turns the watch off).",
+            "enum": [
+              "all",
+              "selected"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "pr_urls": {
+            "description": "The PRs to watch in `selected` mode, as the PR panel lists them.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 25,
+            "title": "Pr Urls",
+            "type": "array"
+          }
+        },
+        "title": "PullRequestWatchRequest",
+        "type": "object"
+      },
+      "PullRequestWatchStatus": {
+        "description": "A session's pull request watch.",
+        "properties": {
+          "active": {
+            "description": "Whether anything is watched.",
+            "title": "Active",
+            "type": "boolean"
+          },
+          "max_wakes": {
+            "description": "The wake-up budget newly watched PRs get.",
+            "format": "int64",
+            "title": "Max Wakes",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "`all` (every tracked PR, including ones opened later), `selected` (the PRs in `prs` that are watching) or `off`.",
+            "enum": [
+              "off",
+              "all",
+              "selected"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "object": {
+            "default": "session.pr_watch",
+            "title": "Object",
+            "type": "string"
+          },
+          "prs": {
+            "description": "Each PR watched now or earlier. In `all` mode, tracked PRs missing here are picked up on the next poll.",
+            "items": {
+              "$ref": "#/components/schemas/PullRequestWatchEntry"
+            },
+            "title": "Prs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "active",
+          "max_wakes",
+          "prs"
+        ],
+        "title": "PullRequestWatchStatus",
+        "type": "object"
+      },
       "QueuedEvent": {
         "description": "Optional event emitted between `created` and `in_progress`\nfor background tasks that are queued before they start.\n\nForeground streaming responses skip this event.",
         "properties": {
@@ -15527,6 +15713,192 @@
         "summary": "Update Policy",
         "tags": [
           "session_policies"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/pr-watch": {
+      "delete": {
+        "description": "Stop watching every pull request. Requires edit access.",
+        "operationId": "stop_session_pr_watch_v1_sessions__session_id__pr_watch_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestWatchStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Session Pr Watch",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "get": {
+        "description": "Return which of the session's pull requests are watched.",
+        "operationId": "get_session_pr_watch_v1_sessions__session_id__pr_watch_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestWatchStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session Pr Watch",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "patch": {
+        "description": "Watch or stop watching one pull request. Requires edit access.\n\nStopping one while every PR is watched leaves the others watched but\nstops picking up new PRs.",
+        "operationId": "change_session_pr_watch_v1_sessions__session_id__pr_watch_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PullRequestWatchChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestWatchStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Session Pr Watch",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "put": {
+        "description": "Watch every tracked pull request, or exactly the listed ones.\n\nA watch wakes the agent on failed checks, merge conflicts and comments or\nreviews from collaborators, and ends once checks pass with no changes\nrequested. PRs are read through the session's runner or host, like the\nPull Requests panel, so the watch uses the same account. Requires edit access.",
+        "operationId": "set_session_pr_watch_v1_sessions__session_id__pr_watch_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PullRequestWatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestWatchStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Pr Watch",
+        "tags": [
+          "sessions"
         ]
       }
     },

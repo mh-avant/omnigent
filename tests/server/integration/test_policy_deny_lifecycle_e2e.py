@@ -20,7 +20,9 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 
+from omnigent.errors import ErrorCode, OmnigentError
 from tests.server.conftest import ControllableMockClient
 from tests.server.helpers import create_session_for_agent as _create_session
 from tests.server.helpers import create_test_agent
@@ -262,3 +264,22 @@ async def test_input_deny_publishes_committed_item_event(
     assert "Blocked by test policy" in text, (
         f"deny sentinel missing from committed item; got {item}"
     )
+
+
+async def test_server_message_goes_through_input_policy(
+    policy_app: FastAPI,
+    policy_client: httpx.AsyncClient,
+    mock_llm: ControllableMockClient,
+) -> None:
+    """A message the server sends for a user (a PR watch wake-up) is policy-checked
+    exactly like one the user typed: a DENY refuses it instead of starting a turn."""
+    agent = await create_test_agent(policy_client)
+    session_id = await _create_session(policy_client, agent["id"])
+    await _attach_deny_policy(policy_client, session_id)
+
+    with pytest.raises(OmnigentError, match="Blocked by test policy") as refused:
+        await policy_app.state.server_message_dispatch(
+            policy_app, session_id, None, "[System: PR watch — #7 needs attention]"
+        )
+
+    assert refused.value.code == ErrorCode.FORBIDDEN

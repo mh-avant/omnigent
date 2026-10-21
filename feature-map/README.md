@@ -154,6 +154,10 @@ user-visible behavior. It then uses exactly these four H2 sections in order:
 - [Azure DevOps pull requests](./azure-devops.md) covers the shared panel,
   composer, associations, partial results, and Canvas links.
 
+- [PR watch](./pr-watch.md) covers watching a session's pull requests until CI
+  passes and review is clear: the composer control, "all" mode, wake-ups, stop
+  notes and release flag.
+
 ## Seed scope
 
 The original five recipes form the seed set. Completing this set means checking

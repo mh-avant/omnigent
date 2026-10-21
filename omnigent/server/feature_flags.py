@@ -30,6 +30,7 @@ class Feature(StrEnum):
     CLAUDE_OSC_STATUS = "claude_osc_status"
     WORKSPACE_CONTENT_SEARCH = "workspace_content_search"
     GRID_SESSIONS_DISPLAY_UI = "grid_sessions_display_ui"
+    PR_WATCH = "pr_watch"
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,12 @@ FEATURE_DEFINITIONS: tuple[FeatureDefinition, ...] = (
         description="Search workspace file contents through the session runner",
         owner="web",
         review_by_release="0.20.0",
+    ),
+    FeatureDefinition(
+        feature=Feature.PR_WATCH,
+        description="Keep a session on its pull request until CI and review are clear",
+        owner="server",
+        review_by_release="0.21.0",
     ),
 )
 

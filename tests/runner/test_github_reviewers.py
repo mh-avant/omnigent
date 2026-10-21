@@ -118,8 +118,15 @@ def _pr_data() -> dict[str, object]:
         "body": "description",
         "comments": [],
         "reviews": [],
-        "latestReviews": [_review("alice", "APPROVED")],
+        "latestReviews": [
+            {
+                **_review("alice", "APPROVED"),
+                "submittedAt": "2026-10-21T10:00:00Z",
+                "authorAssociation": "COLLABORATOR",
+            }
+        ],
         "reviewRequests": [{"__typename": "Team", "slug": "platform"}],
+        "mergeable": "CONFLICTING",
         "labels": [
             {"id": "LA_1", "name": "size/XS", "color": "EDEDED", "description": "Tiny"},
             {"id": "LA_2", "name": "bug", "color": "d73a4a", "description": ""},
@@ -160,10 +167,17 @@ def test_workspace_info_shapes_reviewers_with_one_gh_request() -> None:
         payload = github_resource._workspace_github_info("/workspace")
 
     assert payload["pr"]["reviewers"] == [
-        {"login": "alice", "kind": "user", "state": "APPROVED"},
+        {
+            "login": "alice",
+            "kind": "user",
+            "state": "APPROVED",
+            "submitted_at": "2026-10-21T10:00:00Z",
+            "author_association": "COLLABORATOR",
+        },
         {"login": "platform", "kind": "team", "state": "PENDING"},
     ]
     assert payload["pr"]["labels"] == _PR_LABELS
+    assert payload["pr"]["mergeable"] is False
     assert len(gh_calls) == 1
     _assert_reviewer_fields(gh_calls[0])
     list_accounts.assert_not_called()
@@ -198,10 +212,17 @@ def test_reference_info_shapes_reviewers_with_one_gh_request() -> None:
         payload = github_resource._reference_info("/workspace", reference)
 
     assert payload["pr"]["reviewers"] == [
-        {"login": "alice", "kind": "user", "state": "APPROVED"},
+        {
+            "login": "alice",
+            "kind": "user",
+            "state": "APPROVED",
+            "submitted_at": "2026-10-21T10:00:00Z",
+            "author_association": "COLLABORATOR",
+        },
         {"login": "platform", "kind": "team", "state": "PENDING"},
     ]
     assert payload["pr"]["labels"] == _PR_LABELS
+    assert payload["pr"]["mergeable"] is False
     assert len(gh_calls) == 1
     _assert_reviewer_fields(gh_calls[0])
     fields = gh_calls[0][gh_calls[0].index("--json") + 1].split(",")
