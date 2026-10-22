@@ -688,10 +688,10 @@ class SessionResourceRegistry:
             )
 
     def claude_status_file_reports_busy(self, session_id: str) -> bool:
-        """Whether Claude's status file says busy, including a background agent.
+        """Whether Claude still reports work, including a background agent.
 
         :param session_id: Session/conversation identifier, e.g. ``"conv_abc"``.
-        :returns: ``True`` when the session's status-file poller last read ``busy``.
+        :returns: ``True`` when Claude's OSC report or status file says it is working.
         """
         with self._lock:
             poller = self._status_pollers.get(session_id)
@@ -1759,7 +1759,9 @@ class SessionResourceRegistry:
         if reader is not None:
             from omnigent.harnesses.claude_native.program_status import ClaudeProgramStatusPoller
 
-            return ClaudeProgramStatusPoller(reader, fallback, on_status)
+            return ClaudeProgramStatusPoller(
+                reader, fallback, on_status, prompt_submitted_at_getter=_prompt_submitted_at_ms
+            )
         return fallback
 
     async def _handle_terminal_exit(
