@@ -10641,6 +10641,32 @@ def test_hook_record_stop_excludes_backgrounded_subagents() -> None:
     ]
 
 
+def test_hook_record_stop_counts_running_teammates_as_background_agents() -> None:
+    """Agent-team teammates keep the lead busy like a background sub-agent.
+
+    They must mark a background agent running and stay out of the shell tally.
+    """
+    record = _hook_record_from_jsonl_record(
+        _make_jsonl_record(
+            {
+                "hook_event_name": "Stop",
+                "background_tasks": [
+                    {
+                        "id": "teammate-task",
+                        "type": "teammate",
+                        "status": "running",
+                        "description": "Investigate the failing check",
+                    },
+                ],
+            }
+        )
+    )
+
+    assert record.background_task_count == 0
+    assert record.background_agent_running is True
+    assert record.background_tasks is None
+
+
 def test_hook_record_stop_all_background_tasks_terminal_counts_zero() -> None:
     """Every shell finished → count is 0, dropping the indicator."""
     record = _hook_record_from_jsonl_record(
