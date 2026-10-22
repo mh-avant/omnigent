@@ -15,6 +15,7 @@ import pytest
 import omnigent.harnesses.claude_native.forwarder as forwarder
 from omnigent.harnesses.claude_native.bridge import (
     ClaudeHookRecord,
+    read_prompt_submitted_at,
     record_hook_event,
 )
 from tests.harnesses.claude_native.forwarder._support import (
@@ -814,6 +815,48 @@ async def test_short_turn_poll_posts_items_without_a_status_edge(tmp_path: Path)
 
     assert [body["type"] for body in posted] == ["external_conversation_item"] * 2
     assert not [body for body in posted if body["type"] == "external_session_status"]
+
+
+@pytest.mark.asyncio
+async def test_forwarder_records_a_teammate_delivery_as_a_prompt(tmp_path: Path) -> None:
+    """A teammate message starts a lead turn without a prompt hook; the forwarder records it."""
+    bridge_dir = tmp_path / "bridge"
+    transcript_path = tmp_path / "session.jsonl"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "delivery",
+                "timestamp": "2026-10-22T03:27:32.638Z",
+                "message": {
+                    "role": "user",
+                    "content": "Another Claude session sent a message:\n"
+                    '<teammate-message teammate_id="sleeper">slept</teammate-message>',
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = forwarder.TranscriptForwardState(
+        transcript_path=transcript_path,
+        line_cursor=0,
+        byte_offset=0,
+        cursor_fingerprint=forwarder._jsonl_cursor_fingerprint(transcript_path, 0),
+    )
+    transport = httpx.MockTransport(lambda _request: httpx.Response(202, json={}))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await forwarder._forward_available_items(
+            client=client,
+            session_id="conv_abc",
+            bridge_dir=bridge_dir,
+            agent_name="claude-native-ui",
+            state=state,
+            retry_tracker=forwarder._PostRetryTracker(),
+            dedupe=forwarder._ForwardDedupeState(),
+        )
+
+    assert read_prompt_submitted_at(bridge_dir) == 1792639652.638
 
 
 @pytest.mark.asyncio

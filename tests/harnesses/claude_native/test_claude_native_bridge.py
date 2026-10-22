@@ -68,6 +68,7 @@ from omnigent.harnesses.claude_native.bridge import (
     read_transcript_items_since,
     read_transcript_path,
     record_hook_event,
+    record_peer_delivery,
     start_tool_relay,
     stop_hook_seen_since,
     write_tmux_target,
@@ -821,6 +822,20 @@ def test_record_hook_event_keeps_the_pinned_session_prompt_time(tmp_path: Path) 
     assert read_prompt_submitted_at(bridge_dir) == hooks[-1].recorded_at
 
 
+def test_record_peer_delivery_only_moves_the_prompt_time_forward(tmp_path: Path) -> None:
+    """A teammate delivery counts as a prompt, but never rewinds a later one."""
+    bridge_dir = tmp_path / "bridge"
+    record_hook_event(bridge_dir, {"hook_event_name": "UserPromptSubmit", "session_id": "parent"})
+    prompt_at = read_prompt_submitted_at(bridge_dir)
+    assert prompt_at is not None
+
+    record_peer_delivery(bridge_dir, prompt_at - 10)
+    assert read_prompt_submitted_at(bridge_dir) == prompt_at
+    record_peer_delivery(bridge_dir, prompt_at + 10)
+    assert read_prompt_submitted_at(bridge_dir) == prompt_at + 10
+    assert read_claude_session_id(bridge_dir) == "parent"
+
+
 @pytest.mark.parametrize("updated_file", ["hook_identity", "model_vocabulary"])
 def test_bridge_writers_preserve_concurrent_identity_and_model_updates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, updated_file: str
@@ -1473,6 +1488,33 @@ def test_claude_framed_delivery_without_origin_is_internal(
         assert not item.agent_message_candidate
     else:
         assert "is_meta" not in item.data
+
+
+@pytest.mark.parametrize(
+    "metadata,delivered",
+    [
+        ({}, True),
+        ({"origin": {"kind": "peer"}}, True),
+        ({"origin": {"kind": "human"}}, False),
+        ({"isSidechain": True}, False),
+    ],
+)
+def test_transcript_read_reports_teammate_delivery_time(
+    tmp_path: Path, metadata: dict[str, Any], delivered: bool
+) -> None:
+    """Only a teammate message on the main thread reports a delivery time."""
+    entry = {
+        "type": "user",
+        "timestamp": "2026-10-22T03:27:32.638Z",
+        "message": {"role": "user", "content": _FRAMED_TEAMMATE_DELIVERY},
+        **metadata,
+    }
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(_transcript_line(entry), encoding="utf-8")
+
+    result = read_transcript_items_from_offset(transcript, 0, start_line=0, agent_name="Claude")
+
+    assert result.latest_peer_delivery_at == (1792639652.638 if delivered else None)
 
 
 def test_queued_framed_delivery_from_a_human_stays_visible(tmp_path: Path) -> None:

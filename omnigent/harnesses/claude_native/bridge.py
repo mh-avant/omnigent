@@ -940,6 +940,9 @@ class TranscriptReadResult:
     :param record_items: Parsed items grouped by their complete source JSONL
         record, with the byte offset immediately after each record. Native
         child-transcript batching uses these boundaries for partial checkpoints.
+    :param latest_peer_delivery_at: When the latest teammate message reached
+        this session, in epoch seconds, or ``None`` when the scanned records
+        held none.
     """
 
     line_cursor: int
@@ -950,6 +953,7 @@ class TranscriptReadResult:
     latest_model: str | None = None
     latest_custom_title: str | None = None
     record_items: tuple[TranscriptRecordItems, ...] = ()
+    latest_peer_delivery_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -3089,7 +3093,8 @@ def read_prompt_submitted_at(bridge_dir: Path) -> float | None:
 
     Set by :func:`record_hook_event` from the session's own
     ``UserPromptSubmit`` hook, whether the prompt was typed in the pane,
-    delivered by Omnigent, or a background agent's completion notice.
+    delivered by Omnigent, or a background agent's completion notice, and by
+    :func:`record_peer_delivery` for a teammate message, which fires no hook.
 
     :param bridge_dir: Bridge directory path.
     :returns: The hook's recorded time in epoch seconds, e.g.
@@ -3100,6 +3105,32 @@ def read_prompt_submitted_at(bridge_dir: Path) -> float | None:
     if not isinstance(raw, (int, float)) or isinstance(raw, bool):
         return None
     return float(raw)
+
+
+def record_peer_delivery(bridge_dir: Path, delivered_at: float) -> None:
+    """
+    Record a teammate message as the session's latest prompt.
+
+    Claude starts a turn for a teammate message without a ``UserPromptSubmit``
+    hook, so the transcript reader reports it instead.
+
+    :param bridge_dir: Bridge directory path.
+    :param delivered_at: The delivery record's time in epoch seconds, e.g.
+        ``1792430876.27``.
+    """
+    with _bridge_metadata_write_lock(bridge_dir):
+        state = _read_json_file(bridge_dir / _STATE_FILE)
+        if not isinstance(state, dict):
+            state = {}
+        current = state.get("prompt_submitted_at")
+        if (
+            isinstance(current, (int, float))
+            and not isinstance(current, bool)
+            and current >= delivered_at
+        ):
+            return
+        state["prompt_submitted_at"] = delivered_at
+        _write_json_file(bridge_dir / _STATE_FILE, state)
 
 
 def read_seen_claude_session_ids(bridge_dir: Path) -> set[str]:
@@ -3526,6 +3557,7 @@ def read_transcript_items_from_offset(
     latest_usage: dict[str, int] | None = None
     latest_model: str | None = None
     latest_custom_title: str | None = None
+    latest_peer_delivery_at: float | None = None
     record_items: list[TranscriptRecordItems] = []
     for record in read_result.records:
         parsed: list[ClaudeTranscriptItem] = []
@@ -3573,6 +3605,9 @@ def read_transcript_items_from_offset(
         custom_title = _custom_title_from_transcript_entry(entry)
         if custom_title is not None:
             latest_custom_title = custom_title
+        delivered_at = _peer_delivery_time(entry)
+        if delivered_at is not None:
+            latest_peer_delivery_at = max(delivered_at, latest_peer_delivery_at or 0.0)
         record_items.append(
             TranscriptRecordItems(
                 next_byte_offset=record.next_byte_offset,
@@ -3597,7 +3632,39 @@ def read_transcript_items_from_offset(
         latest_model=latest_model,
         latest_custom_title=latest_custom_title,
         record_items=tuple(record_items),
+        latest_peer_delivery_at=latest_peer_delivery_at,
     )
+
+
+def _peer_delivery_time(entry: _JsonObject) -> float | None:
+    """
+    Return when a teammate message was delivered to this session's main thread.
+
+    :param entry: One parsed transcript record.
+    :returns: The record's time in epoch seconds, or ``None`` when it is not
+        a teammate delivery.
+    """
+    if entry.get("type") != "user" or entry.get("isSidechain") is True:
+        return None
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        ]
+    else:
+        return None
+    origin = entry.get("origin")
+    is_peer_origin = isinstance(origin, dict) and origin.get("kind") == "peer"
+    if not any(
+        is_peer_origin or _is_unattributed_peer_delivery(text, entry=entry) for text in texts
+    ):
+        return None
+    return _transcript_timestamp(entry.get("timestamp"))
 
 
 # Per-model pricing memo for transcript cost computation. Each successful
