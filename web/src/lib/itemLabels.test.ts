@@ -7,8 +7,10 @@ import {
   itemLabelTitle,
   itemLabelTitleParts,
   itemLabelsIn,
+  mentionedInLatestReply,
   remarkItemLabels,
   struckItemLabelsIn,
+  type ItemLabelIndex,
   type ItemLabelSource,
 } from "./itemLabels";
 import { buildItemCommentMessage, scanItemLabelSource } from "./itemComments";
@@ -158,6 +160,41 @@ describe("buildItemLabelIndex", () => {
       scan(message("m3", "Reopening [Q1]: per-user eviction is too costly.")),
     ]);
     expect(reopened.items.get("Q1")?.closedBy).toBeNull();
+  });
+
+  const recentLabels = (index: ItemLabelIndex) =>
+    [...index.items.values()]
+      .filter((item) => mentionedInLatestReply(index, item))
+      .map((item) => item.label);
+
+  it("tracks each item's newest mention and which items the latest reply is about", () => {
+    const defining = message("m1", "[Q1] Pick a cache. [Q2] Pick a queue. [Q3] Pick a region.");
+    const reply = message("m2", "~~[Q1]~~ per-user cache. [Q2] still deciding.");
+    // A tool-only turn has no text, so it doesn't replace the reply.
+    const index = buildItemLabelIndex([scan(defining), scan(reply), scan(message("m3", " "))]);
+    expect(index.latestReply).toBe(reply);
+    expect(index.items.get("Q1")?.lastMention).toBe(reply);
+    expect(index.items.get("Q3")?.lastMention).toBe(defining);
+    // The item the reply just closed counts, so the user sees what was resolved.
+    expect(recentLabels(index)).toEqual(["Q1", "Q2"]);
+  });
+
+  it("keeps the latest agent reply as the reference when the newest message is the user's", () => {
+    const defining = message("m1", "[Q1] Pick a cache. [Q2] Pick a queue.");
+    const reply = message("m2", "[Q1] Leaning per-user. [Q2] waits on it.");
+    const user: ItemLabelSource = {
+      messageId: "u1",
+      role: "user",
+      text: "Go with per-user for [Q1].",
+    };
+    const index = buildItemLabelIndex([scan(defining), scan(reply), scan(user)]);
+    expect(index.latestReply).toBe(reply);
+    expect(index.items.get("Q1")?.lastMention).toBe(user);
+    expect(recentLabels(index)).toEqual(["Q2"]);
+
+    const unanswered = buildItemLabelIndex([scan(user)]);
+    expect(unanswered.latestReply).toBeNull();
+    expect(recentLabels(unanswered)).toEqual([]);
   });
 
   it("stays disabled until labels recur or one message tags several items", () => {

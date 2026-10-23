@@ -45,6 +45,7 @@ describe("OpenItemsPanel", () => {
       indexOf(
         "- **[Q1] Backfill window.** Batch it?\n- **[Q2] Soft-deleted rows.** Copy or drop?",
         "~~[Q1]~~ batching it.",
+        "Tests pass.",
       ),
     );
 
@@ -55,6 +56,40 @@ describe("OpenItemsPanel", () => {
       "Backfill window.",
     );
     expect(panel.textContent).toContain("Closed (1)");
+    expect(panel.textContent).not.toContain("In the latest reply");
+  });
+
+  it("puts the items the latest reply mentions first, tinted, including one it just closed", () => {
+    renderPanel(
+      indexOf(
+        ["Q1", "Q2", "Q3", "Q4"].map((label) => `- **[${label}] Item ${label}.**`).join("\n"),
+        "~~[Q1]~~ batched.",
+        "~~[Q2]~~ dropped. [Q3] is next.",
+      ),
+    );
+
+    const panel = screen.getByTestId("open-items");
+    expect(panel.textContent).toContain("Open items(2)");
+    const names = screen
+      .getAllByRole("button", { name: /^Show item/ })
+      .map((button) => button.getAttribute("aria-label"));
+    // Header chips, then the expanded rows: recent, other open, closed.
+    expect(names).toEqual([
+      "Show item Q2 (closed), mentioned in the latest reply",
+      "Show item Q3, mentioned in the latest reply",
+      "Show item Q4",
+      "Show item Q2 (closed), mentioned in the latest reply",
+      "Show item Q3, mentioned in the latest reply",
+      "Show item Q4",
+      "Show item Q1 (closed)",
+    ]);
+    const chipClass = (name: string) => screen.getAllByRole("button", { name })[0].className;
+    expect(chipClass("Show item Q3, mentioned in the latest reply")).toContain("bg-warning/15");
+    expect(chipClass("Show item Q2 (closed), mentioned in the latest reply")).toContain(
+      "line-through",
+    );
+    expect(chipClass("Show item Q4")).not.toContain("bg-warning/15");
+    expect(panel.textContent).toMatch(/In the latest reply.*Other open \(1\).*Closed \(1\)/);
   });
 
   it("collapses on a press outside it, but not inside it or a popover", () => {

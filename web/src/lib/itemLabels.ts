@@ -85,6 +85,8 @@ export interface ItemLabelEntry {
   source: ItemLabelSource;
   /** The message whose struck mention closed the item; null while open. */
   closedBy: ItemLabelSource | null;
+  /** The newest message that mentions the label. */
+  lastMention: ItemLabelSource;
   /** How many messages mention the label. */
   messageCount: number;
   /** Comments sent on the item, oldest first. */
@@ -99,6 +101,8 @@ export interface ItemLabelIndex {
   enabled: boolean;
   /** Items in order of definition. */
   items: ReadonlyMap<string, ItemLabelEntry>;
+  /** The newest agent message with any text; null before the agent has replied. */
+  latestReply: ItemLabelSource | null;
 }
 
 /** The transcript's label index; null on surfaces without a transcript. */
@@ -138,6 +142,7 @@ function matchAttachment(name: string, files: readonly ItemLabelFile[]): ItemLab
 export function buildItemLabelIndex(scans: Iterable<ItemLabelScan>): ItemLabelIndex {
   const items = new Map<string, ItemLabelEntry>();
   let enabled = false;
+  let latestReply: ItemLabelSource | null = null;
   let awaitingReply: { label: string; comment: ItemLabelComment }[] = [];
   for (const { source, labels, struck, comments, commentHeadingOnly } of scans) {
     if (labels.length > 1) enabled = true;
@@ -145,14 +150,24 @@ export function buildItemLabelIndex(scans: Iterable<ItemLabelScan>): ItemLabelIn
       const closedBy = struck.includes(label) ? source : null;
       const entry = items.get(label);
       if (!entry) {
-        items.set(label, { label, source, closedBy, messageCount: 1, comments: [] });
+        items.set(label, {
+          label,
+          source,
+          closedBy,
+          lastMention: source,
+          messageCount: 1,
+          comments: [],
+        });
         continue;
       }
       if (!commentHeadingOnly?.includes(label)) entry.closedBy = closedBy;
+      entry.lastMention = source;
       entry.messageCount += 1;
       enabled = true;
     }
     if (source.role === "assistant") {
+      // A tool-only turn has no text and isn't the reply the user is reading.
+      if (source.text.trim() !== "") latestReply = source;
       for (const { label, comment } of awaitingReply) {
         const sentence = labels.includes(label) ? extractLabelSentence(source.text, label) : null;
         if (sentence) comment.reply = { source, sentence };
@@ -174,7 +189,15 @@ export function buildItemLabelIndex(scans: Iterable<ItemLabelScan>): ItemLabelIn
       }
     }
   }
-  return { enabled, items };
+  return { enabled, items, latestReply };
+}
+
+/**
+ * Whether the latest agent reply mentions `item`, including by closing it, so
+ * the user sees at a glance which items the reply is about.
+ */
+export function mentionedInLatestReply(index: ItemLabelIndex, item: ItemLabelEntry): boolean {
+  return index.latestReply !== null && item.lastMention === index.latestReply;
 }
 
 export interface ScannedLine {
