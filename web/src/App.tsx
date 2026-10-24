@@ -5,6 +5,7 @@ import { NotFoundPage as NotFoundPageImpl } from "@/pages/NotFoundPage";
 import { useOmnigentPageView } from "@/lib/analytics";
 import { PageLoading } from "@/components/PageLoading";
 import { Spinner } from "@/components/ui/spinner";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { ChunkLoadErrorBoundary } from "@/components/ChunkLoadErrorBoundary";
 import { isFeatureEnabled, type FeatureKey } from "@/lib/capabilities";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
@@ -238,8 +239,10 @@ function AppRoutes({ basename }: AppProps) {
 
 export default function App(props: AppProps = {}) {
   return (
-    <ChunkLoadErrorBoundary>
-      <AppRoutes {...props} />
-    </ChunkLoadErrorBoundary>
+    <AppErrorBoundary>
+      <ChunkLoadErrorBoundary>
+        <AppRoutes {...props} />
+      </ChunkLoadErrorBoundary>
+    </AppErrorBoundary>
   );
 }

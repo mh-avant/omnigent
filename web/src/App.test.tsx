@@ -64,12 +64,17 @@ vi.mock("@/extensions/ExtensionProvider", () => ({
 
 import App from "./App";
 
-const chunkError = vi.hoisted(
-  () => new TypeError("Failed to fetch dynamically imported module: /assets/old.js"),
-);
+const { chunkError, renderError, tasksPageError } = vi.hoisted(() => {
+  const missingChunk = new TypeError("Failed to fetch dynamically imported module: /assets/old.js");
+  return {
+    chunkError: missingChunk,
+    renderError: new Error("Application bug"),
+    tasksPageError: { current: missingChunk },
+  };
+});
 vi.mock("@/pages/TasksPage", () => ({
   TasksPage: () => {
-    throw chunkError;
+    throw tasksPageError.current;
   },
 }));
 vi.mock("@/pages/SetupPage", () => ({
@@ -78,14 +83,15 @@ vi.mock("@/pages/SetupPage", () => ({
   },
 }));
 
-// Assert the recovery boundary surrounds both the normal and first-run route trees.
-describe("chunk load recovery", () => {
+// Assert the recovery boundaries surround both the normal and first-run route trees.
+describe("render error recovery", () => {
   const reload = vi.fn();
   function suppressExpectedError(event: ErrorEvent) {
-    if (event.error === chunkError) event.preventDefault();
+    if (event.error === chunkError || event.error === renderError) event.preventDefault();
   }
 
   beforeEach(() => {
+    tasksPageError.current = chunkError;
     sessionStorage.clear();
     reload.mockReset();
     vi.stubGlobal("location", { reload });
@@ -118,6 +124,22 @@ describe("chunk load recovery", () => {
     );
     expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load this page");
     expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { path: "/tasks", basename: undefined },
+    { path: "/mount/tasks", basename: "/mount" },
+  ])("shows the error instead of a blank page when $path throws", async ({ path, basename }) => {
+    tasksPageError.current = renderError;
+    render(
+      <CapabilitiesProvider info={FALLBACK_SERVER_INFO}>
+        <MemoryRouter initialEntries={[path]}>
+          <App basename={basename} />
+        </MemoryRouter>
+      </CapabilitiesProvider>,
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Application bug");
+    expect(reload).not.toHaveBeenCalled();
   });
 });
 
