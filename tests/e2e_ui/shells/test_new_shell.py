@@ -45,14 +45,14 @@ import json
 import os
 import re
 import signal
-import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
 from playwright.sync_api import Page, expect
 
-from tests.e2e_ui.conftest import open_right_rail
+from tests.e2e_ui.conftest import _server_state, open_right_rail
 
 
 def _open_new_shell(page: Page) -> None:
@@ -71,23 +71,6 @@ def _open_new_shell(page: Page) -> None:
     # type launches the default directly.
     rail.get_by_role("button", name="Open new").click()
     page.get_by_role("menuitem", name=re.compile("Shell")).click()
-
-
-def _find_runner_pids() -> list[int]:
-    """PIDs of the runner entry point (``omnigent.runner._entry``).
-
-    Same drop-the-runner stand-in for "Stop session" as
-    ``sessions/test_sidebar_stop.py``: the harness's tunneled non-host
-    runner has no stop_session path, so a kill produces the identical
-    liveness chain. The ``terminal_session`` fixture respawns it for the
-    next test.
-    """
-    result = subprocess.run(
-        ["pgrep", "-f", "omnigent.runner._entry"], capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        return []
-    return [int(line.strip()) for line in result.stdout.strip().splitlines() if line.strip()]
 
 
 def test_new_shell_launches_and_opens(page: Page, terminal_session: tuple[str, str]) -> None:
@@ -170,7 +153,9 @@ def test_new_shell_accepts_typed_command(page: Page, terminal_session: tuple[str
 
 
 def test_empty_terminal_view_remains_selectable_and_resumable(
-    page: Page, terminal_session: tuple[str, str]
+    page: Page,
+    terminal_session: tuple[str, str],
+    _recover_shared_runner: Callable[[], None],
 ) -> None:
     """A stopped terminal-first session is resumable, same mount and after reload.
 
@@ -233,32 +218,34 @@ def test_empty_terminal_view_remains_selectable_and_resumable(
     # Genuine stop + hard reload, still inside the 45s creation window:
     # drop the runner, wait for the server to observe it offline, reload.
     # The fresh-session startup grace must not mask the stopped UI.
-    runner_pids = _find_runner_pids()
-    assert runner_pids, "no runner process found to stop"
-    for pid in runner_pids:
-        os.kill(pid, signal.SIGKILL)
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        health = httpx.get(f"{base_url}/health", params={"session_ids": session_id}, timeout=5.0)
-        if (
-            health.status_code == 200
-            and not health.json()["sessions"][session_id]["runner_online"]
-        ):
-            break
-        time.sleep(0.5)
-    else:
-        raise AssertionError("server never observed the runner offline")
+    os.kill(int(_server_state["runner_pid"]), signal.SIGKILL)
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            health = httpx.get(
+                f"{base_url}/health", params={"session_ids": session_id}, timeout=5.0
+            )
+            if (
+                health.status_code == 200
+                and not health.json()["sessions"][session_id]["runner_online"]
+            ):
+                break
+            time.sleep(0.5)
+        else:
+            raise AssertionError("server never observed the runner offline")
 
-    page.reload()
+        page.reload()
 
-    expect(terminal_button).to_be_enabled()
-    if terminal_button.get_attribute("aria-pressed") != "true":
-        terminal_button.click()
-    expect(terminal_button).to_have_attribute("aria-pressed", "true")
-    expect(terminal_view).to_be_visible()
-    expect(terminal_view).to_contain_text("The harness is not running.")
-    expect(terminal_view.get_by_role("button", name="Resume session")).to_be_enabled()
-    expect(terminal_view.get_by_role("status")).to_have_count(0)
+        expect(terminal_button).to_be_enabled()
+        if terminal_button.get_attribute("aria-pressed") != "true":
+            terminal_button.click()
+        expect(terminal_button).to_have_attribute("aria-pressed", "true")
+        expect(terminal_view).to_be_visible()
+        expect(terminal_view).to_contain_text("The harness is not running.")
+        expect(terminal_view.get_by_role("button", name="Resume session")).to_be_enabled()
+        expect(terminal_view.get_by_role("status")).to_have_count(0)
+    finally:
+        _recover_shared_runner()
 
 
 def test_starting_terminal_view_shows_loading_without_resume(
@@ -435,6 +422,100 @@ def test_stopped_terminal_view_keeps_resume(page: Page, terminal_session: tuple[
     expect(terminal_view.get_by_role("status")).to_have_count(0)
 
 
+def test_failed_terminal_view_surfaces_runner_failure_cause(
+    page: Page, terminal_session: tuple[str, str]
+) -> None:
+    """A failed terminal-first session surfaces its failure cause on Terminal.
+
+    When the runner fails to start (``runner_failed_to_start`` recorded as a
+    session-level ``last_task_error`` with no transcript item), the Terminal
+    view must tell the user why — the same actionable cause the Chat view
+    surfaces via its error pill — so a user who defaults to Terminal can
+    tell the session failed and why.
+    """
+    base_url, session_id = terminal_session
+
+    # Outside the cold-boot grace, runner down — and the launch failed with a
+    # persisted, actionable cause (mirrors the Chat view's last_task_error).
+    created = int(time.time()) - 3600
+    failure = {
+        "code": "runner_failed_to_start",
+        "message": (
+            "runner process exited before connecting; "
+            "host authentication failed (run `omnigent login`)"
+        ),
+    }
+
+    terminal_list = re.compile(rf"/v1/sessions/{re.escape(session_id)}/resources/terminals\?.*")
+    page.route(
+        terminal_list,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"data":[],"first_id":null,"last_id":null,"has_more":false}',
+        ),
+    )
+    page.route(
+        re.compile(r"/health\?session_ids="),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {"sessions": {session_id: {"runner_online": False, "host_online": True}}}
+            ),
+        ),
+    )
+    # Silence the live channels so the real online runner never leaks past the
+    # mocks (same reason as the stopped-session test above).
+    page.route(f"**/v1/sessions/{session_id}/stream*", lambda route: route.abort())
+    page.route_web_socket(re.compile(r"/v1/sessions/updates"), lambda ws: None)
+
+    def _patch_conversation_rows(route):
+        resp = route.fetch()
+        body = resp.json()
+        for row in body.get("data", []):
+            if row.get("id") == session_id:
+                row["runner_online"] = False
+                row["created_at"] = created
+                row["status"] = "failed"
+                row["last_task_error"] = failure
+        route.fulfill(response=resp, json=body)
+
+    page.route(re.compile(r"/v1/sessions\?"), _patch_conversation_rows)
+
+    def _patch_snapshot(route):
+        resp = route.fetch()
+        body = resp.json()
+        body["created_at"] = created
+        body["status"] = "failed"
+        body["last_task_error"] = failure
+        route.fulfill(response=resp, json=body)
+
+    page.route(re.compile(rf"/v1/sessions/{re.escape(session_id)}(\?|$)"), _patch_snapshot)
+
+    terminal_first = httpx.patch(
+        f"{base_url}/v1/sessions/{session_id}",
+        json={"labels": {"omnigent.ui": "terminal"}},
+        timeout=10.0,
+    )
+    terminal_first.raise_for_status()
+
+    page.goto(f"{base_url}/c/{session_id}")
+
+    terminal_button = page.get_by_test_id("view-mode-terminal")
+    expect(terminal_button).to_be_enabled()
+    terminal_button.click()
+    expect(terminal_button).to_have_attribute("aria-pressed", "true")
+
+    terminal_view = page.locator('[data-testid="main-terminal-view"][data-visible="true"]')
+    expect(terminal_view).to_be_visible()
+    # Baseline: the failed session renders the generic stopped terminal state.
+    expect(terminal_view).to_contain_text("The harness is not running.")
+
+    # The persisted failure cause must be visible, mirroring the Chat error pill.
+    expect(terminal_view).to_contain_text("host authentication failed")
+
+
 def test_shell_wheel_scroll_reaches_mouse_tracking_program(
     page: Page, terminal_session: tuple[str, str], tmp_path: Path
 ) -> None:
@@ -523,4 +604,69 @@ def test_workspace_rail_preserves_outer_top_inset(
     assert rail_top < header_bottom, (
         f"workspace rail top {rail_top}px vs header bottom {header_bottom}px "
         "— expected the rail to extend beside the header"
+    )
+
+
+def test_shell_inventory_refreshes_after_provisioning(
+    page: Page, terminal_session: tuple[str, str]
+) -> None:
+    """A cached server fallback must give way to the ready host's shell inventory."""
+    base_url, session_id = terminal_session
+    ready = False
+
+    def agent_inventory(route):
+        response = route.fetch()
+        body = response.json()
+        body["terminals"] = ["zsh"] if ready else ["bash"]
+        route.fulfill(response=response, json=body)
+
+    page.route(
+        re.compile(rf"/v1/sessions/{re.escape(session_id)}/agent(?:\?|$)"),
+        agent_inventory,
+    )
+    # Isolate the provisioning event from unrelated host-list notifications.
+    page.route_web_socket(re.compile(r"/v1/sessions/updates"), lambda ws: None)
+    page.add_init_script(
+        """
+        (() => {
+          const originalFetch = window.fetch.bind(window);
+          window.fetch = (input, init) => {
+            const url = typeof input === "string" ? input : input.url;
+            if (url.includes("/stream")) {
+              const stream = new ReadableStream({
+                start(controller) {
+                  window.emitSandboxReady = (id) => {
+                    const data = JSON.stringify({
+                      conversation_id: id, stage: "ready", error: null
+                    });
+                    controller.enqueue(new TextEncoder().encode(
+                      "event: session.sandbox_status\\ndata: " + data + "\\n\\n"
+                    ));
+                  };
+                }
+              });
+              return Promise.resolve(new Response(stream, {
+                headers: {"Content-Type": "text/event-stream"}
+              }));
+            }
+            return originalFetch(input, init);
+          };
+        })();
+        """
+    )
+    page.goto(f"{base_url}/c/{session_id}")
+    open_right_rail(page)
+    rail = page.get_by_role("complementary", name="Workspace")
+    rail.get_by_role("button", name="Open new").click()
+    expect(page.get_by_role("menuitem", name="Shell (bash)", exact=True)).to_be_visible()
+    page.keyboard.press("Escape")
+    page.wait_for_function("typeof window.emitSandboxReady === 'function'")
+
+    ready = True
+    page.evaluate("(id) => window.emitSandboxReady(id)", session_id)
+    rail.get_by_role("button", name="Open new").click()
+    expect(page.get_by_role("menuitem", name="Shell (zsh)", exact=True)).to_be_visible()
+    page.get_by_role("menuitem", name="Shell (zsh)", exact=True).click()
+    expect(rail.get_by_role("button", name=re.compile(r"^Close zsh · u-"))).to_be_visible(
+        timeout=60_000
     )

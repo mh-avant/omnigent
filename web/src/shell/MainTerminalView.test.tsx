@@ -1,9 +1,14 @@
 import type * as UseTerminalsModule from "@/hooks/useTerminals";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useLayoutEffect, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type TerminalInfo, useTerminals } from "@/hooks/useTerminals";
+import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
+import { FALLBACK_SERVER_INFO } from "@/lib/capabilities";
+import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
+import type { Session } from "@/lib/types";
+import { updateTerminalSplit } from "./terminalSplitPanesStore";
 import { MainTerminalView } from "./MainTerminalView";
 import type { TerminalFirstContextValue } from "./TerminalFirstContext";
 import { TerminalFirstContextProvider } from "./TerminalFirstContext";
@@ -18,13 +23,19 @@ vi.mock("@/components/blocks/TerminalView", () => ({
     sessionId,
     terminalId,
     readOnly,
+    active,
+    directAttachUrl,
     onResume,
+    resumeTarget,
     resumePending,
   }: {
     sessionId: string;
     terminalId: string;
     readOnly?: boolean;
+    active?: boolean;
+    directAttachUrl?: string;
     onResume?: () => void | Promise<void>;
+    resumeTarget?: string;
     resumePending?: boolean;
   }) => {
     // Assign once per mount (useRef(arg) evaluates arg every render but keeps
@@ -38,8 +49,11 @@ vi.mock("@/components/blocks/TerminalView", () => ({
         data-session-id={sessionId}
         data-terminal-id={terminalId}
         data-read-only={String(readOnly ?? false)}
+        data-active={String(active ?? true)}
         data-instance={String(instance.current)}
+        data-direct-attach-url={directAttachUrl ?? ""}
         data-resume-pending={String(resumePending ?? false)}
+        data-resume-target={resumeTarget ?? ""}
       >
         {onResume && (
           <button type="button" onClick={() => void onResume()}>
@@ -110,22 +124,28 @@ function viewTree({
   terminals,
   isNativeWrapper = false,
   initialTerminalKey = null,
+  visible = true,
   readOnly = false,
   conversationId = "conv_sdk",
   runnerOnline,
+  lastTaskError,
   onResume,
   setView,
   terminalStartingUp = false,
+  sandboxOffline = false,
 }: {
   terminals: TerminalInfo[];
   isNativeWrapper?: boolean;
   initialTerminalKey?: string | null;
+  visible?: boolean;
   readOnly?: boolean;
   conversationId?: string;
   runnerOnline?: boolean;
+  lastTaskError?: Session["lastTaskError"];
   onResume?: () => void | Promise<void>;
   setView?: (view: "chat" | "terminal") => void;
   terminalStartingUp?: boolean;
+  sandboxOffline?: boolean;
 }) {
   useTerminalsMock.mockReturnValue({ terminals, isLoading: false, error: null });
   return (
@@ -133,9 +153,12 @@ function viewTree({
       <MainTerminalView
         conversationId={conversationId}
         initialTerminalKey={initialTerminalKey}
+        visible={visible}
         readOnly={readOnly}
         runnerOnline={runnerOnline}
+        lastTaskError={lastTaskError}
         onResume={onResume}
+        sandboxOffline={sandboxOffline}
       />
     </TerminalFirstContextProvider>
   );
@@ -152,11 +175,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("MainTerminalView — terminal-first SDK sessions", () => {
-  it("renders the REPL chrome-free: shells and the + stay out of the pill view", () => {
+  it("renders the REPL chrome-free: shells and the + stay out of the pill view", async () => {
     renderView({ terminals: [REPL_TERMINAL, BASH_SHELL] });
 
-    // The agent's terminal fills the pane.
-    expect(screen.getByTestId("terminal-view")).toHaveAttribute(
+    // The agent's terminal fills the pane. findByTestId waits for the lazy
+    // TerminalView chunk to resolve through its Suspense boundary.
+    expect(await screen.findByTestId("terminal-view")).toHaveAttribute(
       "data-terminal-id",
       "terminal_tui_main",
     );
@@ -237,6 +261,32 @@ describe("MainTerminalView — terminal-first SDK sessions", () => {
     await waitFor(() => expect(onResume).toHaveBeenCalledTimes(1));
   });
 
+  it("names an offline sandbox and its resume action", async () => {
+    const onResume = vi.fn().mockRejectedValue(new Error("launch failed"));
+    renderView({ terminals: [], runnerOnline: false, onResume, sandboxOffline: true });
+
+    expect(screen.getByText("The sandbox is offline.")).toBeInTheDocument();
+    expect(screen.getByText("Resume it to reconnect the terminal.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resume sandbox" }));
+
+    expect(await screen.findByText("Couldn't resume sandbox: launch failed")).toBeInTheDocument();
+    expect(onResume).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the sandbox in an attached terminal's resume action", async () => {
+    renderView({
+      terminals: [REPL_TERMINAL],
+      runnerOnline: false,
+      onResume: vi.fn().mockResolvedValue(undefined),
+      sandboxOffline: true,
+    });
+
+    expect(await screen.findByTestId("terminal-view")).toHaveAttribute(
+      "data-resume-target",
+      "sandbox",
+    );
+  });
+
   it("keeps the offline state actionable when resuming fails", async () => {
     const onResume = vi.fn().mockRejectedValue(new Error("host offline"));
     renderView({ terminals: [], runnerOnline: false, onResume });
@@ -245,6 +295,33 @@ describe("MainTerminalView — terminal-first SDK sessions", () => {
 
     expect(await screen.findByText("Couldn't resume session: host offline")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume session" })).toBeEnabled();
+  });
+
+  it("surfaces the failure cause on the stopped state so the user sees why", () => {
+    const onResume = vi.fn().mockResolvedValue(undefined);
+    renderView({
+      terminals: [],
+      runnerOnline: false,
+      onResume,
+      lastTaskError: {
+        code: "runner_failed_to_start",
+        message: "runner process exited before connecting; host authentication failed",
+      },
+    });
+
+    expect(screen.getByText("The harness is not running.")).toBeInTheDocument();
+    expect(screen.getByTestId("terminal-failure-cause")).toHaveTextContent(
+      "runner process exited before connecting; host authentication failed",
+    );
+    expect(screen.getByRole("button", { name: "Resume session" })).toBeInTheDocument();
+  });
+
+  it("keeps the plain stopped copy when the session carries no failure cause", () => {
+    const onResume = vi.fn().mockResolvedValue(undefined);
+    renderView({ terminals: [], runnerOnline: false, onResume });
+
+    expect(screen.getByText("The harness is not running.")).toBeInTheDocument();
+    expect(screen.queryByTestId("terminal-failure-cause")).toBeNull();
   });
 });
 
@@ -387,6 +464,55 @@ describe("MainTerminalView — native wrapper sessions", () => {
     expect(view.getAttribute("data-instance")).not.toBe(first);
   });
 
+  it("re-attaches the agent terminal when a host switch resets the terminals cache", () => {
+    // SwitchHostDialog resets the terminals cache after a successful switch:
+    // a synchronous clear to [] followed by an invalidate/refetch
+    // (web/src/shell/SwitchHostDialog.tsx). The agent terminal keeps the
+    // same resource id across hosts, so the keyed mount only tears down
+    // because of the empty intermediate render — if MainTerminalView ever
+    // kept the pane alive across an empty inventory, the pill's Terminal
+    // view would stay attached to the previous host's PTY (old WS, old
+    // scrollback) after "Switch host…". This pins the reset's other half:
+    // the clear unmounts the pane and the refetched row (the new host's
+    // attach info) rebuilds it.
+    const paneOnHostA: TerminalInfo = {
+      id: "terminal_claude_main",
+      name: "claude",
+      session: "main",
+      running: true,
+      directAttachUrl: "ws://127.0.0.1:40001/?token=host-a",
+    };
+    const paneOnHostB: TerminalInfo = {
+      ...paneOnHostA,
+      directAttachUrl: "ws://127.0.0.1:40002/?token=host-b",
+    };
+    const { rerender } = renderView({
+      terminals: [paneOnHostA],
+      isNativeWrapper: true,
+      conversationId: "conv_switch",
+    });
+    const first = screen.getByTestId("terminal-view").getAttribute("data-instance");
+
+    // The dialog's setQueryData(…, []) lands synchronously: the old host's
+    // pane must unmount (dropping its WebSocket), not linger.
+    rerender(viewTree({ terminals: [], isNativeWrapper: true, conversationId: "conv_switch" }));
+    expect(screen.queryByTestId("terminal-view")).toBeNull();
+
+    // …then the invalidate's refetch delivers the new host's pane.
+    rerender(
+      viewTree({
+        terminals: [paneOnHostB],
+        isNativeWrapper: true,
+        conversationId: "conv_switch",
+      }),
+    );
+    const view = screen.getByTestId("terminal-view");
+    // A fresh instance id proves a new mount — a new xterm + WebSocket
+    // attach — carrying the new host's attach info.
+    expect(view.getAttribute("data-instance")).not.toBe(first);
+    expect(view).toHaveAttribute("data-direct-attach-url", "ws://127.0.0.1:40002/?token=host-b");
+  });
+
   it("renders a rail-opened shell chrome-free with the close X", () => {
     const claudePane: TerminalInfo = {
       id: "terminal_claude_main",
@@ -415,7 +541,7 @@ describe("MainTerminalView — native wrapper sessions", () => {
 });
 
 describe("MainTerminalView — persistent hidden mount", () => {
-  it("keeps the terminal mounted (same instance) across a hide/show flip", () => {
+  it("toggles inert without remounting the terminal across a hide/show flip", () => {
     // ChatPage keeps this surface mounted as a hidden overlay while the
     // user is in chat. A new data-instance after the round-trip means
     // the flip tore down the xterm + WS it exists to preserve.
@@ -423,6 +549,7 @@ describe("MainTerminalView — persistent hidden mount", () => {
     const view = screen.getByTestId("terminal-view");
     const instance = view.getAttribute("data-instance");
     expect(screen.getByTestId("main-terminal-view")).toHaveAttribute("data-visible", "true");
+    expect(screen.getByTestId("main-terminal-view")).not.toHaveAttribute("inert");
 
     rerender(
       <TerminalFirstContextProvider value={makeCtx(false)}>
@@ -435,6 +562,7 @@ describe("MainTerminalView — persistent hidden mount", () => {
       </TerminalFirstContextProvider>,
     );
     expect(screen.getByTestId("main-terminal-view")).toHaveAttribute("data-visible", "false");
+    expect(screen.getByTestId("main-terminal-view")).toHaveAttribute("inert", "");
     expect(screen.getByTestId("terminal-view").getAttribute("data-instance")).toBe(instance);
 
     rerender(
@@ -447,7 +575,17 @@ describe("MainTerminalView — persistent hidden mount", () => {
         />
       </TerminalFirstContextProvider>,
     );
+    expect(screen.getByTestId("main-terminal-view")).toHaveAttribute("data-visible", "true");
+    expect(screen.getByTestId("main-terminal-view")).not.toHaveAttribute("inert");
     expect(screen.getByTestId("terminal-view").getAttribute("data-instance")).toBe(instance);
+  });
+
+  it("makes an initially hidden pre-warmed terminal inert on mount", () => {
+    renderView({ terminals: [REPL_TERMINAL], visible: false });
+
+    expect(screen.getByTestId("main-terminal-view")).toHaveAttribute("data-visible", "false");
+    expect(screen.getByTestId("main-terminal-view")).toHaveAttribute("inert", "");
+    expect(screen.getByTestId("terminal-view")).toBeInTheDocument();
   });
 
   it("falls back to the agent pane when the restored target no longer exists", () => {
@@ -497,5 +635,226 @@ describe("MainTerminalView — persistent hidden mount", () => {
       "data-terminal-id",
       "terminal_tui_main",
     );
+  });
+});
+
+describe("MainTerminalView — split panes", () => {
+  const AGENT_KEY = "terminal:terminal_tui_main";
+  const BASH_KEY = "terminal:terminal_bash_s1";
+  const savedSplit = {
+    layout: {
+      axis: "columns" as const,
+      ratio: 0.5,
+      children: [AGENT_KEY, BASH_KEY] as [string, string],
+    },
+    focusedKey: BASH_KEY,
+  };
+
+  function splitTree(
+    conversationId: string,
+    terminals: TerminalInfo[],
+    enabled = true,
+    { isFetching = false, listCompleteAt = 0, visible = true, readOnly = false } = {},
+  ) {
+    useTerminalsMock.mockReturnValue({
+      terminals,
+      isLoading: false,
+      isFetching,
+      listCompleteAt,
+      error: null,
+    });
+    return (
+      <CapabilitiesProvider
+        info={{ ...FALLBACK_SERVER_INFO, features: { splittable_terminal_view_ui: enabled } }}
+      >
+        <TerminalFirstContextProvider value={makeCtx(false)}>
+          <MainTerminalView
+            conversationId={conversationId}
+            visible={visible}
+            readOnly={readOnly}
+            splittable
+          />
+        </TerminalFirstContextProvider>
+      </CapabilitiesProvider>
+    );
+  }
+
+  it("renders saved panes side by side with only the focused one active", async () => {
+    writeSessionWorkspaceState("conv_split_render", { terminalSplit: savedSplit });
+    render(splitTree("conv_split_render", [REPL_TERMINAL, BASH_SHELL]));
+
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    const [agentPane, bashPane] = screen.getAllByTestId("terminal-view");
+    expect(agentPane).toHaveAttribute("data-terminal-id", "terminal_tui_main");
+    expect(agentPane).toHaveAttribute("data-active", "false");
+    expect(bashPane).toHaveAttribute("data-active", "true");
+    expect(screen.getByRole("separator", { name: "Resize terminal panes" })).toBeInTheDocument();
+  });
+
+  it("ignores a saved split while the feature is off", async () => {
+    writeSessionWorkspaceState("conv_split_off", { terminalSplit: savedSplit });
+    render(splitTree("conv_split_off", [REPL_TERMINAL, BASH_SHELL], false));
+
+    expect(await screen.findAllByTestId("terminal-view")).toHaveLength(1);
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  it("keeps the agent xterm mounted when a split appears", async () => {
+    render(splitTree("conv_split_mount", [REPL_TERMINAL, BASH_SHELL]));
+    const before = (await screen.findByTestId("terminal-view")).getAttribute("data-instance");
+
+    act(() => updateTerminalSplit("conv_split_mount", () => savedSplit));
+
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    expect(screen.getAllByTestId("terminal-view")[0]).toHaveAttribute("data-instance", before);
+  });
+
+  it("drops a closed shell's pane and returns to the single agent view", async () => {
+    writeSessionWorkspaceState("conv_split_prune", { terminalSplit: savedSplit });
+    const view = render(splitTree("conv_split_prune", [REPL_TERMINAL, BASH_SHELL]));
+    view.rerender(splitTree("conv_split_prune", [REPL_TERMINAL]));
+
+    await waitFor(() =>
+      expect(readSessionWorkspaceState("conv_split_prune").terminalSplit).toBeUndefined(),
+    );
+    expect(screen.getAllByTestId("terminal-view")).toHaveLength(1);
+  });
+
+  it("drops a never-seen shell's pane once a complete runner answer lands", async () => {
+    writeSessionWorkspaceState("conv_split_stale", { terminalSplit: savedSplit });
+    const view = render(splitTree("conv_split_stale", []));
+    view.rerender(
+      splitTree("conv_split_stale", [REPL_TERMINAL], true, { listCompleteAt: Date.now() + 1 }),
+    );
+
+    await waitFor(() =>
+      expect(readSessionWorkspaceState("conv_split_stale").terminalSplit).toBeUndefined(),
+    );
+  });
+
+  it("keeps a never-seen shell's pane while the list is not known complete", async () => {
+    // A failed or soft-status fetch, or an SSE-only fill, leaves the list partial
+    // with no fetch in flight and no complete answer.
+    writeSessionWorkspaceState("conv_split_partial", { terminalSplit: savedSplit });
+    render(splitTree("conv_split_partial", [REPL_TERMINAL]));
+
+    expect(await screen.findByText("Terminal unavailable.")).toBeInTheDocument();
+    expect(readSessionWorkspaceState("conv_split_partial").terminalSplit).toEqual(savedSplit);
+  });
+
+  it("does not trust a complete answer older than the last empty list", async () => {
+    writeSessionWorkspaceState("conv_split_reset", { terminalSplit: savedSplit });
+    const staleAnswer = Date.now() - 1;
+    const view = render(splitTree("conv_split_reset", [], true, { listCompleteAt: staleAnswer }));
+    view.rerender(
+      splitTree("conv_split_reset", [REPL_TERMINAL], true, { listCompleteAt: staleAnswer }),
+    );
+
+    expect(await screen.findByText("Terminal unavailable.")).toBeInTheDocument();
+    expect(readSessionWorkspaceState("conv_split_reset").terminalSplit).toEqual(savedSplit);
+  });
+
+  it("persists keyboard resizes within the 25-75% bounds", async () => {
+    writeSessionWorkspaceState("conv_split_resize", { terminalSplit: savedSplit });
+    render(splitTree("conv_split_resize", [REPL_TERMINAL, BASH_SHELL]));
+    const divider = await screen.findByRole("separator", { name: "Resize terminal panes" });
+
+    for (let step = 0; step < 10; step++) fireEvent.keyDown(divider, { key: "ArrowRight" });
+
+    expect(divider).toHaveAttribute("aria-valuenow", "75");
+    expect(readSessionWorkspaceState("conv_split_resize").terminalSplit?.layout).toMatchObject({
+      ratio: 0.75,
+    });
+  });
+
+  it("keeps a saved split while the terminal list is still filling in", async () => {
+    writeSessionWorkspaceState("conv_split_reload", { terminalSplit: savedSplit });
+    const view = render(
+      splitTree("conv_split_reload", [REPL_TERMINAL], true, { isFetching: true }),
+    );
+    view.rerender(splitTree("conv_split_reload", [REPL_TERMINAL, BASH_SHELL]));
+
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+    expect(readSessionWorkspaceState("conv_split_reload").terminalSplit).toEqual(savedSplit);
+  });
+
+  it("keeps live shell panes while the agent terminal is missing", async () => {
+    writeSessionWorkspaceState("conv_split_no_agent", { terminalSplit: savedSplit });
+    render(splitTree("conv_split_no_agent", [BASH_SHELL]));
+
+    expect(await screen.findByTestId("terminal-view")).toHaveAttribute(
+      "data-terminal-id",
+      "terminal_bash_s1",
+    );
+    expect(screen.getByText("Terminal unavailable.")).toBeInTheDocument();
+  });
+
+  it("moves a stale agent pane onto the live agent terminal", async () => {
+    writeSessionWorkspaceState("conv_split_agent_swap", { terminalSplit: savedSplit });
+    const claude = { id: "terminal_claude_main", name: "claude", session: "main", running: true };
+    render(splitTree("conv_split_agent_swap", [claude, BASH_SHELL]));
+
+    await waitFor(() =>
+      expect(readSessionWorkspaceState("conv_split_agent_swap").terminalSplit?.layout).toEqual({
+        ...savedSplit.layout,
+        children: ["terminal:terminal_claude_main", BASH_KEY],
+      }),
+    );
+  });
+
+  it("renders hidden and read-only surfaces unsplit", async () => {
+    writeSessionWorkspaceState("conv_split_gates", { terminalSplit: savedSplit });
+    const terminals = [REPL_TERMINAL, BASH_SHELL];
+    const view = render(splitTree("conv_split_gates", terminals, true, { visible: false }));
+    expect(await screen.findAllByTestId("terminal-view")).toHaveLength(1);
+    view.rerender(splitTree("conv_split_gates", terminals, true, { readOnly: true }));
+    expect(screen.getAllByTestId("terminal-view")).toHaveLength(1);
+    expect(readSessionWorkspaceState("conv_split_gates").terminalSplit).toEqual(savedSplit);
+  });
+
+  it("moves split focus to the pane the user focuses", async () => {
+    writeSessionWorkspaceState("conv_split_focus", { terminalSplit: savedSplit });
+    const { container } = render(splitTree("conv_split_focus", [REPL_TERMINAL, BASH_SHELL]));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-view")).toHaveLength(2));
+
+    fireEvent.focus(container.querySelector(`[data-terminal-pane="${AGENT_KEY}"]`)!);
+
+    expect(readSessionWorkspaceState("conv_split_focus").terminalSplit?.focusedKey).toBe(AGENT_KEY);
+    expect(screen.getAllByTestId("terminal-view")[0]).toHaveAttribute("data-active", "true");
+  });
+
+  it("commits a pointer drag onto the latest layout, ignoring cross-axis keys", async () => {
+    writeSessionWorkspaceState("conv_split_drag", { terminalSplit: savedSplit });
+    const { container } = render(splitTree("conv_split_drag", [REPL_TERMINAL, BASH_SHELL]));
+    const divider = await screen.findByRole("separator", { name: "Resize terminal panes" });
+    const panes = divider.parentElement!;
+    vi.spyOn(panes, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 1000,
+      height: 500,
+    } as DOMRect);
+    let captured = false;
+    divider.setPointerCapture = () => {
+      captured = true;
+    };
+    divider.hasPointerCapture = () => captured;
+
+    fireEvent.keyDown(divider, { key: "ArrowDown" });
+    expect(divider).toHaveAttribute("aria-valuenow", "50");
+    fireEvent.pointerDown(divider, { pointerId: 1 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 650, clientY: 100 });
+    expect(divider).toHaveAttribute("aria-valuenow", "65");
+    expect(readSessionWorkspaceState("conv_split_drag").terminalSplit?.layout).toMatchObject({
+      ratio: 0.5,
+    });
+    fireEvent.pointerUp(divider, { pointerId: 1 });
+
+    expect(readSessionWorkspaceState("conv_split_drag").terminalSplit?.layout).toMatchObject({
+      ratio: 0.65,
+    });
+    expect(container.querySelector(`[data-terminal-pane="${BASH_KEY}"]`)).toHaveStyle({
+      left: "65%",
+    });
   });
 });
